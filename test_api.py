@@ -73,6 +73,17 @@ def test_is_trend_bullish():
     resp = requests.post("http://127.0.0.1:8000/is-trend-bullish", json=payload)
     print(resp.json())
 
+def test_confluence():
+    print("\nTesting /confluence-score...")
+    payload = {
+        "provider": "crypto",
+        "symbol": "BTC/USD",
+        "timeframe": "1d",
+        "exchange": "kraken"
+    }
+    resp = requests.post("http://127.0.0.1:8000/confluence-score", json=payload)
+    print(resp.json())
+
 def test_stock():
     print("\nTesting /analyze/market (Stock)...")
     payload = {
@@ -91,6 +102,7 @@ if __name__ == "__main__":
         test_filtering()
         test_scan_patterns()
         test_is_trend_bullish()
+        test_confluence()
         test_stock()
     except Exception as e:
         print(f"Error: {e}")

@@ -1,0 +1,10 @@
+services:
+  ta-api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - RAPIDAPI_PROXY_SECRET=your_secret_here
+    volumes:
+      - ./cache:/app/cache
+    restart: always

@@ -11,8 +11,23 @@ from typing import List, Optional, Literal
 import diskcache
 import time
 import asyncio
+import os
+from fastapi import Header, Security
 
 app = FastAPI(title="Master Trader TA API")
+
+# --- Monetization & Security ---
+# Set this in your environment or .env file
+RAPIDAPI_SECRET = os.getenv("RAPIDAPI_PROXY_SECRET", "dev_secret")
+
+async def verify_rapidapi_key(x_rapidapi_proxy_secret: str = Header(None)):
+    """Middleware to verify requests from RapidAPI or other proxies."""
+    # In development mode (secret == "dev_secret"), we bypass the check if header is missing
+    if RAPIDAPI_SECRET == "dev_secret":
+        return True
+    if x_rapidapi_proxy_secret != RAPIDAPI_SECRET:
+        raise HTTPException(status_code=403, detail="Unauthorized access. Invalid API Key.")
+    return True
 
 # --- Caching Setup ---
 # Cache results for 60 seconds
@@ -349,7 +364,7 @@ async def fetch_market_data(provider: str, symbol: str, timeframe: str, exchange
 
 # --- Endpoints ---
 
-@app.post("/analyze/upload")
+@app.post("/analyze/upload", dependencies=[Depends(verify_rapidapi_key)])
 async def analyze_upload(request: UploadRequest):
     if len(request.data) < 30:
         raise HTTPException(status_code=400, detail="Need at least 30 candles.")
@@ -359,7 +374,7 @@ async def analyze_upload(request: UploadRequest):
     analysis = get_indicator_status(df, request.indicators)
     return clean_dict(analysis)
 
-@app.post("/analyze/market")
+@app.post("/analyze/market", dependencies=[Depends(verify_rapidapi_key)])
 async def analyze_market(request: MarketRequest):
     # Include indicators in cache key to avoid returning wrong filtered results
     indicators_key = ",".join(sorted(request.indicators)) if request.indicators else "all"
@@ -395,7 +410,7 @@ async def analyze_market(request: MarketRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/scan-patterns")
+@app.post("/scan-patterns", dependencies=[Depends(verify_rapidapi_key)])
 async def scan_patterns(request: MarketRequest):
     """Scans for patterns across all candles."""
     df = await fetch_market_data(request.provider, request.symbol, request.timeframe, request.exchange)
@@ -424,7 +439,7 @@ async def scan_patterns(request: MarketRequest):
 
     return {"patterns_found": detected}
 
-@app.post("/is-trend-bullish")
+@app.post("/is-trend-bullish", dependencies=[Depends(verify_rapidapi_key)])
 async def is_trend_bullish(request: MarketRequest):
     """Simplified trend check."""
     df = await fetch_market_data(request.provider, request.symbol, request.timeframe, request.exchange)
@@ -445,6 +460,58 @@ async def is_trend_bullish(request: MarketRequest):
         "close": float(cl[-1]),
         "ema200": float(ema200[-1]),
         "adx": float(adx[-1])
+    }
+
+@app.post("/confluence-score", dependencies=[Depends(verify_rapidapi_key)])
+async def get_confluence_score(request: MarketRequest):
+    """
+    Advanced Endpoint: Returns a unified Confluence Score from -100 to +100.
+    Combines RSI, MACD, Bollinger Bands, and Price Action.
+    """
+    df = await fetch_market_data(request.provider, request.symbol, request.timeframe, request.exchange)
+    if df.empty:
+        raise HTTPException(status_code=404, detail="No data found.")
+
+    analysis = get_indicator_status(df)
+    summary = analysis['summary']
+    pa = analysis['price_action']
+
+    score = 0
+
+    # 1. Base Signal Score (up to 40 points)
+    if summary['signal'] == "Buy": score += 40
+    elif summary['signal'] == "Sell": score -= 40
+
+    # 2. Trend Confluence (20 points)
+    if summary['trend'] == "Bullish": score += 20
+    else: score -= 20
+
+    # 3. RSI Extremes (15 points)
+    if summary['rsi_status'] == "Oversold": score += 15
+    elif summary['rsi_status'] == "Overbought": score -= 15
+
+    # 4. Price Action Bonus (25 points)
+    if any(p in pa for p in ["Double Bottom", "Ascending Triangle"]): score += 25
+    if any(p in pa for p in ["Double Top", "Descending Triangle", "Head and Shoulders"]): score -= 25
+
+    # Ensure range -100 to +100
+    score = max(-100, min(100, score))
+
+    sentiment = "Neutral"
+    if score > 50: sentiment = "Strong Buy"
+    elif score > 10: sentiment = "Buy"
+    elif score < -50: sentiment = "Strong Sell"
+    elif score < -10: sentiment = "Sell"
+
+    return {
+        "symbol": request.symbol,
+        "confluence_score": score,
+        "sentiment": sentiment,
+        "components": {
+            "summary": summary['signal'],
+            "trend": summary['trend'],
+            "price_action_found": pa
+        }
     }
 
 if __name__ == "__main__":

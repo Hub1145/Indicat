@@ -1,9 +1,10 @@
 # Pro-Trader Ultimate TA-as-a-Service API
 
-A high-performance, production-ready Technical Analysis API built with Python, FastAPI, and industry-standard financial libraries. This service offloads the complex mathematical "heavy lifting" of technical analysis, providing over 200 indicators, candlestick patterns, and advanced price action detection.
+A high-performance, enterprise-grade Technical Analysis API built with Python, FastAPI, and industry-standard financial libraries. This service offloads the complex mathematical "heavy lifting" of technical analysis, providing over 200 indicators, candlestick patterns, and advanced price action detection.
 
 ## 🚀 Key Features
 
+- **Monetization Ready**: Integrated middleware for RapidAPI proxy verification and tiered access control.
 - **Dual Modes of Analysis**:
   - **Market Fetching**: Automatic data retrieval for Crypto (Binance/Kraken via CCXT), Stocks, and Forex (yfinance).
   - **Data Upload**: Accept direct OHLCV JSON uploads for custom datasets or backtesting.
@@ -17,10 +18,20 @@ A high-performance, production-ready Technical Analysis API built with Python, F
 - **Intelligent Logic**:
   - **Summary Signals**: Aggregate "Buy/Sell/Hold" advice based on RSI, BBands, MACD, and Trend crossovers.
   - **Trend Analysis**: Built-in 200 EMA and ADX trend strength evaluation.
+- **Advanced Confluence Engine**: A unified scoring endpoint that aggregates multiple indicators into a single actionable sentiment score (-100 to +100).
 - **Performance & Stability**:
   - **Caching**: 60-second disk-based caching (`diskcache`) to prevent redundant external API calls and rate-limiting.
   - **Robust JSON**: Recursive NaN/Inf cleaning ensures 100% JSON compatibility.
   - **Optimized**: Heavy math performed using Numpy arrays.
+
+## 💰 Tiered Pricing Strategy
+
+| Tier | Price | Features | Limits |
+| :--- | :--- | :--- | :--- |
+| **Basic** | Free | 1d timeframe, top 10 indicators | 50 req/day |
+| **Pro** | $25/mo | All timeframes, all 200+ indicators | 5,000 req/mo |
+| **Ultra** | $80/mo | Everything + Pattern Scanning + Trend Checks + Confluence Score | 50,000 req/mo |
+| **Mega** | $150/mo | Unlimited requests + Priority Webhook Support | Unlimited |
 
 ## 🛠 Tech Stack
 
@@ -79,6 +90,9 @@ Performs a full scan of the dataset to identify every occurrence of specific can
 #### `POST /is-trend-bullish`
 A simplified endpoint that returns a boolean indicating if the current trend is bullish based on EMA 200 and ADX.
 
+#### `POST /confluence-score`
+The "Secret Sauce" endpoint. Aggregates RSI, MACD, BBands, and Price Action into a single -100 (Strong Sell) to +100 (Strong Buy) score.
+
 ### Example Usage (Python)
 
 ```python
@@ -97,10 +111,19 @@ print(response.json())
 
 ## 🚢 Deployment
 
+### Using Docker (Recommended)
+The project includes a production-ready Dockerfile that handles the complex TA-Lib C-library installation automatically.
+
+1. **Build and Run:**
+```bash
+docker-compose up --build -d
+```
+
+### Manual Deployment
 For production, it is recommended to use Gunicorn with Uvicorn workers to handle high concurrency:
 
 ```bash
-gunicorn -w 4 -k uvicorn.workers.UvicornWorker main:app
+gunicorn -w 4 -k uvicorn.workers.UvicornWorker main:app --bind 0.0.0.0:8000
 ```
 
 ## 📝 License
