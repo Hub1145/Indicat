@@ -1,12 +1,22 @@
 import pandas as pd
 import numpy as np
 import talib
+import ccxt
+import yfinance as yf
 from ta.trend import IchimokuIndicator
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
+from scipy.signal import argrelextrema
+from fastapi import FastAPI, HTTPException, Depends
+from pydantic import BaseModel
+from typing import List, Optional, Literal
+import diskcache
+import time
+import asyncio
 
-app = FastAPI(title="Pro-Trader Ultimate TA-API")
+app = FastAPI(title="Master Trader TA API")
+
+# --- Caching Setup ---
+# Cache results for 60 seconds
+cache = diskcache.Cache("./cache")
 
 # --- Models ---
 
@@ -18,208 +28,244 @@ class Candle(BaseModel):
     close: float
     volume: float
 
-class AnalysisRequest(BaseModel):
+class UploadRequest(BaseModel):
     data: List[Candle]
-    include_patterns: bool = True
-    include_indicators: bool = True
+
+class MarketRequest(BaseModel):
+    provider: Literal["crypto", "stock", "forex"]
+    symbol: str
+    timeframe: Literal["15m", "4h", "1d"]
 
 # --- Helpers ---
 
-def map_pattern_result(value: int) -> str:
-    """Converts TA-Lib pattern output to human-readable string."""
-    if value > 0:
-        return "Bullish Signal"
-    elif value < 0:
-        return "Bearish Signal"
-    return "No Pattern"
+def clean_dict(d):
+    """Recursively replaces NaN with None for JSON compatibility."""
+    if isinstance(d, dict):
+        return {k: clean_dict(v) for k, v in d.items()}
+    elif isinstance(d, list):
+        return [clean_dict(v) for v in d]
+    elif isinstance(d, (float, np.float64, np.float32)):
+        if np.isnan(d) or np.isinf(d):
+            return None
+        return float(d)
+    return d
 
-def calculate_supertrend(high, low, close, period=10, multiplier=3):
-    """Calculates the Supertrend indicator."""
-    hl2 = (high + low) / 2
-    atr = talib.ATR(high, low, close, timeperiod=period)
+def detect_price_action(df: pd.DataFrame):
+    """Detects Head and Shoulders, Double Top/Bottom, and Triangles."""
+    close = df['close'].values
+    high = df['high'].values
+    low = df['low'].values
 
-    upperband = hl2 + (multiplier * atr)
-    lowerband = hl2 - (multiplier * atr)
+    # Find pivots (order=5 means 5 candles on each side)
+    peak_idx = argrelextrema(high, np.greater, order=5)[0]
+    valley_idx = argrelextrema(low, np.less, order=5)[0]
 
-    supertrend = np.zeros(len(close))
-    in_uptrend = np.ones(len(close), dtype=bool)
+    peaks = high[peak_idx]
+    valleys = low[valley_idx]
 
-    for i in range(period, len(close)):
-        if close[i] > upperband[i-1]:
-            in_uptrend[i] = True
-        elif close[i] < lowerband[i-1]:
-            in_uptrend[i] = False
-        else:
-            in_uptrend[i] = in_uptrend[i-1]
+    patterns = []
 
-            if in_uptrend[i] and lowerband[i] < lowerband[i-1]:
-                lowerband[i] = lowerband[i-1]
-            if not in_uptrend[i] and upperband[i] > upperband[i-1]:
-                upperband[i] = upperband[i-1]
+    # 1. Head and Shoulders
+    if len(peaks) >= 3:
+        p1, p2, p3 = peaks[-3], peaks[-2], peaks[-1]
+        if p2 > p1 and p2 > p3:
+            # Check if shoulders are similar height (within 10%)
+            if abs(p1 - p3) / max(p1, p3) < 0.1:
+                patterns.append("Head and Shoulders")
 
-        supertrend[i] = lowerband[i] if in_uptrend[i] else upperband[i]
+    # 2. Double Top
+    if len(peaks) >= 2:
+        p1, p2 = peaks[-2], peaks[-1]
+        if abs(p1 - p2) / max(p1, p2) < 0.02: # Within 2%
+            patterns.append("Double Top")
 
-    return supertrend
+    # 3. Double Bottom
+    if len(valleys) >= 2:
+        v1, v2 = valleys[-2], valleys[-1]
+        if abs(v1 - v2) / max(v1, v2) < 0.02:
+            patterns.append("Double Bottom")
+
+    # 4. Triangles (Descending/Ascending/Symmetrical)
+    if len(peaks) >= 2 and len(valleys) >= 2:
+        # Check slopes of recent 2 pivots
+        high_slope = (peaks[-1] - peaks[-2]) / (peak_idx[-1] - peak_idx[-2])
+        low_slope = (valleys[-1] - valleys[-2]) / (valley_idx[-1] - valley_idx[-2])
+
+        if high_slope < 0 and low_slope > 0:
+            patterns.append("Symmetrical Triangle")
+        elif high_slope < 0 and abs(low_slope) < 0.001:
+            patterns.append("Descending Triangle")
+        elif low_slope > 0 and abs(high_slope) < 0.001:
+            patterns.append("Ascending Triangle")
+
+    return patterns
+
+def get_indicator_status(df: pd.DataFrame):
+    """Calculates indicator values and their human-readable status."""
+    cl = df['close'].values
+    hi = df['high'].values
+    lo = df['low'].values
+
+    # RSI
+    rsi = talib.RSI(cl, timeperiod=14)
+    current_rsi = rsi[-1]
+    rsi_status = "Neutral"
+    if current_rsi > 70: rsi_status = "Overbought"
+    elif current_rsi < 30: rsi_status = "Oversold"
+
+    # Bollinger Bands
+    upper, mid, lower = talib.BBANDS(cl, timeperiod=20)
+    current_close = cl[-1]
+    bb_status = "Inside Bands"
+    if current_close >= upper[-1]: bb_status = "Touching Upper Band"
+    elif current_close <= lower[-1]: bb_status = "Touching Lower Band"
+
+    # MACD
+    macd, signal, hist = talib.MACD(cl)
+    macd_status = "Neutral"
+    if macd[-1] > signal[-1] and macd[-2] <= signal[-2]:
+        macd_status = "Bullish Crossover"
+    elif macd[-1] < signal[-1] and macd[-2] >= signal[-2]:
+        macd_status = "Bearish Crossover"
+
+    # EMA 200 Trend
+    ema200 = talib.EMA(cl, timeperiod=min(len(cl), 200))
+    trend = "Bullish" if current_close > ema200[-1] else "Bearish"
+
+    # Candlestick Patterns (Using full series for context, then checking latest 3)
+    op = df['open'].values
+    candlestick_patterns = []
+
+    # Run on full series
+    hammers = talib.CDLHAMMER(op, hi, lo, cl)
+    dojis = talib.CDLDOJI(op, hi, lo, cl)
+    engulfing = talib.CDLENGULFING(op, hi, lo, cl)
+
+    # Check latest 3
+    if any(hammers[-3:] != 0): candlestick_patterns.append("Hammer")
+    if any(dojis[-3:] != 0): candlestick_patterns.append("Doji")
+    if any(engulfing[-3:] != 0): candlestick_patterns.append("Engulfing")
+
+    # Price Action Patterns
+    price_action_patterns = detect_price_action(df)
+
+    # Ichimoku Cloud
+    ichimoku = IchimokuIndicator(high=df['high'], low=df['low'])
+    span_a = ichimoku.ichimoku_a()
+    span_b = ichimoku.ichimoku_b()
+
+    # Summary Signal Logic
+    score = 0
+    if rsi_status == "Oversold": score += 1
+    if rsi_status == "Overbought": score -= 1
+    if bb_status == "Touching Lower Band": score += 1
+    if bb_status == "Touching Upper Band": score -= 1
+    if macd_status == "Bullish Crossover": score += 1
+    if macd_status == "Bearish Crossover": score -= 1
+    if trend == "Bullish": score += 0.5
+    else: score -= 0.5
+
+    signal_str = "Hold"
+    if score >= 1.5: signal_str = "Buy"
+    elif score <= -1.5: signal_str = "Sell"
+
+    return {
+        "current_price": float(current_close),
+        "indicators": {
+            "rsi": {"value": float(current_rsi), "status": rsi_status},
+            "bbands": {"upper": float(upper[-1]), "lower": float(lower[-1]), "status": bb_status},
+            "macd": {"value": float(macd[-1]), "status": macd_status},
+            "ema200": {"value": float(ema200[-1]), "status": trend},
+            "ichimoku": {"span_a": float(span_a.iloc[-1]), "span_b": float(span_b.iloc[-1])}
+        },
+        "candlestick_patterns": candlestick_patterns,
+        "price_action_patterns": price_action_patterns,
+        "summary_signal": signal_str
+    }
+
+async def fetch_market_data(provider: str, symbol: str, timeframe: str):
+    """Fetches data from CCXT or yfinance."""
+    if provider == "crypto":
+        # Using Kraken as Binance is restricted in some environments
+        exchange = ccxt.kraken()
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=200)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    else:
+        # yfinance mapping
+        yf_map = {"15m": "15m", "4h": "1h", "1d": "1d"}
+        # Adjust period to ensure 200 candles
+        period_map = {"15m": "1mo", "4h": "1mo", "1d": "2y"}
+
+        ticker_symbol = symbol if provider == "stock" else f"{symbol}=X"
+
+        data = yf.download(ticker_symbol, period=period_map[timeframe], interval=yf_map[timeframe], progress=False)
+
+        # Handle yfinance MultiIndex columns if present
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
+
+        if timeframe == "4h":
+            # Resample 1h to 4h
+            data = data.resample('4h').agg({
+                'Open': 'first',
+                'High': 'max',
+                'Low': 'min',
+                'Close': 'last',
+                'Volume': 'sum'
+            }).dropna()
+
+        df = data.tail(200).reset_index()
+        df.columns = [str(c).lower() for c in df.columns]
+
+        if 'date' in df.columns: df = df.rename(columns={'date': 'timestamp'})
+        if 'datetime' in df.columns: df = df.rename(columns={'datetime': 'timestamp'})
+
+    return df
 
 # --- Endpoints ---
 
-@app.post("/analyze")
-async def analyze(request: AnalysisRequest):
-    if len(request.data) < 52:
-        raise HTTPException(
-            status_code=400,
-            detail="Minimum 52 candles required for full analysis (Ichimoku requirement)."
-        )
+@app.post("/analyze/upload")
+async def analyze_upload(request: UploadRequest):
+    if len(request.data) < 30:
+        raise HTTPException(status_code=400, detail="Need at least 30 candles.")
 
-    # Convert to DataFrame
     df = pd.DataFrame([c.model_dump() for c in request.data])
 
-    # Prepare Numpy arrays for TA-Lib
-    op = df['open'].values
-    hi = df['high'].values
-    lo = df['low'].values
-    cl = df['close'].values
-    vo = df['volume'].values
+    analysis = get_indicator_status(df)
+    return clean_dict(analysis)
 
-    # 1. Core Indicators (TA-Lib)
-    if request.include_indicators:
-        # RSI
-        df['RSI'] = talib.RSI(cl, timeperiod=14)
+@app.post("/analyze/market")
+async def analyze_market(request: MarketRequest):
+    cache_key = f"{request.provider}_{request.symbol}_{request.timeframe}"
+    cached_res = cache.get(cache_key)
+    if cached_res:
+        return cached_res
 
-        # MACD
-        macd, macdsignal, macdhist = talib.MACD(cl, fastperiod=12, slowperiod=26, signalperiod=9)
-        df['MACD'], df['MACD_signal'], df['MACD_hist'] = macd, macdsignal, macdhist
+    try:
+        df = await fetch_market_data(request.provider, request.symbol, request.timeframe)
+        if df.empty:
+            raise HTTPException(status_code=404, detail="No data found for symbol.")
 
-        # Bollinger Bands
-        upper, mid, lower = talib.BBANDS(cl, timeperiod=20, nbdevup=2, nbdevdn=2)
-        df['BB_upper'], df['BB_mid'], df['BB_lower'] = upper, mid, lower
+        analysis = get_indicator_status(df)
 
-        # EMAs
-        df['EMA_20'] = talib.EMA(cl, timeperiod=20)
-        df['EMA_50'] = talib.EMA(cl, timeperiod=50)
-        df['EMA_200'] = talib.EMA(cl, timeperiod=200)
-
-        # SMA
-        df['SMA_20'] = talib.SMA(cl, timeperiod=20)
-
-        # ATR
-        df['ATR'] = talib.ATR(hi, lo, cl, timeperiod=14)
-
-        # ADX
-        df['ADX'] = talib.ADX(hi, lo, cl, timeperiod=14)
-
-        # Stochastic
-        slowk, slowd = talib.STOCH(hi, lo, cl, fastk_period=5, slowk_period=3, slowk_matype=0, slowd_period=3, slowd_matype=0)
-        df['STOCH_k'], df['STOCH_d'] = slowk, slowd
-
-        # VWAP
-        df['VWAP'] = (df['volume'] * (df['high'] + df['low'] + df['close']) / 3).cumsum() / df['volume'].cumsum()
-
-        # Supertrend
-        df['Supertrend'] = calculate_supertrend(hi, lo, cl)
-
-    # 2. Specialized Indicators (ta library)
-    ichimoku = IchimokuIndicator(high=df['high'], low=df['low'])
-    df['ichimoku_a'] = ichimoku.ichimoku_a()
-    df['ichimoku_b'] = ichimoku.ichimoku_b()
-    df['ichimoku_base'] = ichimoku.ichimoku_base_line()
-    df['ichimoku_conv'] = ichimoku.ichimoku_conversion_line()
-
-    # 3. Candlestick Patterns (TA-Lib)
-    if request.include_patterns:
-        patterns = {
-            "Doji": talib.CDLDOJI(op, hi, lo, cl),
-            "Hammer": talib.CDLHAMMER(op, hi, lo, cl),
-            "Engulfing": talib.CDLENGULFING(op, hi, lo, cl),
-            "MorningStar": talib.CDLMORNINGSTAR(op, hi, lo, cl),
-            "ShootingStar": talib.CDLSHOOTINGSTAR(op, hi, lo, cl)
+        response = {
+            "meta_data": {
+                "symbol": request.symbol,
+                "timeframe": request.timeframe,
+                "provider": request.provider,
+                "timestamp": time.time()
+            },
+            **analysis
         }
 
-        for name, results in patterns.items():
-            df[name] = [map_pattern_result(v) for v in results]
+        cleaned_response = clean_dict(response)
 
-    # 4. Signal Score Logic
-    df['signal_score'] = 0
-    if request.include_indicators:
-        # RSI components
-        df.loc[df['RSI'] < 30, 'signal_score'] += 20
-        df.loc[df['RSI'] > 70, 'signal_score'] -= 20
+        # Cache for 60 seconds
+        cache.set(cache_key, cleaned_response, expire=60)
+        return cleaned_response
 
-        # BBands components
-        df.loc[df['close'] < df['BB_lower'], 'signal_score'] += 15
-        df.loc[df['close'] > df['BB_upper'], 'signal_score'] -= 15
-
-        # EMA components
-        df.loc[df['EMA_20'] > df['EMA_50'], 'signal_score'] += 10
-        df.loc[df['EMA_20'] < df['EMA_50'], 'signal_score'] -= 10
-
-    if request.include_patterns:
-        # Pattern components
-        for pattern in ["Doji", "Hammer", "Engulfing", "MorningStar", "ShootingStar"]:
-            df.loc[df[pattern] == "Bullish Signal", 'signal_score'] += 25
-            df.loc[df[pattern] == "Bearish Signal", 'signal_score'] -= 25
-
-    # Clean up NaNs
-    df = df.replace({np.nan: None})
-
-    # Return only the last 5 candles
-    return df.tail(5).to_dict(orient="records")
-
-@app.post("/is-trend-bullish")
-async def is_trend_bullish(request: AnalysisRequest):
-    if len(request.data) < 200:
-        raise HTTPException(status_code=400, detail="Need 200 candles for EMA 200 check.")
-
-    df = pd.DataFrame([c.model_dump() for c in request.data])
-    cl = df['close'].values
-    hi = df['high'].values
-    lo = df['low'].values
-
-    ema200 = talib.EMA(cl, timeperiod=200)
-    adx = talib.ADX(hi, lo, cl, timeperiod=14)
-
-    current_close = cl[-1]
-    current_ema = ema200[-1]
-    current_adx = adx[-1]
-
-    # Trend is bullish if price is above EMA 200 and ADX > 25 (strong trend)
-    bullish = bool(current_close > current_ema and current_adx > 25)
-
-    return {
-        "bullish": bullish,
-        "close": current_close,
-        "ema_200": current_ema,
-        "adx": current_adx
-    }
-
-@app.post("/scan-patterns")
-async def scan_patterns(request: AnalysisRequest):
-    df = pd.DataFrame([c.model_dump() for c in request.data])
-    op = df['open'].values
-    hi = df['high'].values
-    lo = df['low'].values
-    cl = df['close'].values
-
-    patterns = {
-        "Doji": talib.CDLDOJI(op, hi, lo, cl),
-        "Hammer": talib.CDLHAMMER(op, hi, lo, cl),
-        "Engulfing": talib.CDLENGULFING(op, hi, lo, cl),
-        "MorningStar": talib.CDLMORNINGSTAR(op, hi, lo, cl),
-        "ShootingStar": talib.CDLSHOOTINGSTAR(op, hi, lo, cl)
-    }
-
-    detected = []
-    for i in range(len(df)):
-        for name, results in patterns.items():
-            if results[i] != 0:
-                detected.append({
-                    "index": i,
-                    "timestamp": df.iloc[i].get('timestamp'),
-                    "pattern": name,
-                    "sentiment": map_pattern_result(results[i])
-                })
-
-    return {"patterns_found": detected}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
