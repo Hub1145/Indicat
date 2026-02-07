@@ -18,6 +18,8 @@ A high-performance, enterprise-grade Technical Analysis API built with Python, F
   - **Candlestick Patterns**: Over 60 TA-Lib patterns (Hammer, Doji, Engulfing, etc.) with human-readable sentiment mapping.
   - **Price Action Detection**: Native detection of complex chart patterns using high-precision pivot point analysis.
   - **SMC/ICT Strategy**: Built-in detection for Smart Money Concepts like Fair Value Gaps (FVG), Order Blocks (OB), and Market Structure Shifts (MSS).
+- **Sessions & Levels**: Automatic detection of global trading sessions (Tokyo, London, NY) and horizontal Support/Resistance clustering.
+- **Liquidity Tracking**: Identification of Buy Side and Sell Side liquidity zones.
 - **Intelligent Logic**:
   - **Summary Signals**: Aggregate "Buy/Sell/Hold" advice based on RSI, BBands, MACD, and Trend crossovers.
   - **Trend Analysis**: Built-in 200 EMA and ADX trend strength evaluation.
@@ -42,6 +44,11 @@ Detects Smart Money Concepts used by professional traders:
 - **Fair Value Gaps (FVG)**: Identifies price imbalances and liquidity gaps.
 - **Order Blocks (OB)**: Locates institutional buying and selling zones.
 - **Market Structure Shift (MSS)**: Detects changes in trend character.
+
+### Market Dynamics
+- **Sessions**: Real-time identification of Tokyo, London, and New York market hours.
+- **Levels**: Dynamic horizontal Support and Resistance zones based on pivot point clustering.
+- **Liquidity**: Tracks "BSL" (Buy Side) and "SSL" (Sell Side) pools.
 
 ### Candlestick Patterns (TA-Lib)
 Includes all 60+ industry-standard candlestick patterns:
