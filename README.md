@@ -14,7 +14,7 @@ A high-performance, enterprise-grade Technical Analysis API built with Python, F
   - **Selection & Filtering**: Request specific indicators to optimize bandwidth and speed.
 - **Advanced Pattern Recognition**:
   - **Candlestick Patterns**: Over 60 TA-Lib patterns (Hammer, Doji, Engulfing, etc.) with human-readable sentiment mapping.
-  - **Price Action Detection**: Native detection of complex chart patterns (Head and Shoulders, Double Top/Bottom, Triangles) using pivot point analysis.
+  - **Price Action Detection**: Native detection of complex chart patterns using high-precision pivot point analysis.
 - **Intelligent Logic**:
   - **Summary Signals**: Aggregate "Buy/Sell/Hold" advice based on RSI, BBands, MACD, and Trend crossovers.
   - **Trend Analysis**: Built-in 200 EMA and ADX trend strength evaluation.
@@ -23,6 +23,26 @@ A high-performance, enterprise-grade Technical Analysis API built with Python, F
   - **Caching**: 60-second disk-based caching (`diskcache`) to prevent redundant external API calls and rate-limiting.
   - **Robust JSON**: Recursive NaN/Inf cleaning ensures 100% JSON compatibility.
   - **Optimized**: Heavy math performed using Numpy arrays.
+
+## 📊 Supported Patterns
+
+### Price Action Patterns (Advanced)
+The API identifies complex chart structures using advanced pivot point analysis:
+- **Head and Shoulders**: Detects potential trend reversals.
+- **Double Top / Double Bottom**: Identifies critical reversal support and resistance.
+- **Symmetrical Triangle**: Detects consolidation periods.
+- **Ascending Triangle**: Bullish continuation structure.
+- **Descending Triangle**: Bearish continuation structure.
+
+### Candlestick Patterns (TA-Lib)
+Includes all 60+ industry-standard candlestick patterns:
+- **Hammer / Inverted Hammer**
+- **Bullish / Bearish Engulfing**
+- **Morning Star / Evening Star**
+- **Doji / Dragonfly Doji / Gravestone Doji**
+- **Three White Soldiers / Three Black Crows**
+- **Shooting Star**
+- *And 50+ more...*
 
 ## 💰 Tiered Pricing Strategy
 
