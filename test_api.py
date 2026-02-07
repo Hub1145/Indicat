@@ -35,7 +35,21 @@ def test_market():
     start = time.time()
     resp = requests.post("http://127.0.0.1:8000/analyze/market", json=payload)
     print(f"Time taken (Cached): {time.time() - start:.2f}s")
-    # Cached should be much faster
+
+def test_filtering():
+    print("\nTesting Indicator Filtering...")
+    payload = {
+        "provider": "crypto",
+        "symbol": "BTC/USD",
+        "timeframe": "1d",
+        "exchange": "kraken",
+        "indicators": ["talib_RSI", "volatility_bbh"]
+    }
+    resp = requests.post("http://127.0.0.1:8000/analyze/market", json=payload)
+    res = resp.json()
+    print("Selected Indicators:", res.get("selected_indicators"))
+    if "selected_indicators" in res and "talib_RSI" in res["selected_indicators"]:
+        print("Success: only selected indicators returned")
 
 def test_stock():
     print("\nTesting /analyze/market (Stock)...")
@@ -52,6 +66,7 @@ if __name__ == "__main__":
     try:
         test_upload()
         test_market()
+        test_filtering()
         test_stock()
     except Exception as e:
         print(f"Error: {e}")

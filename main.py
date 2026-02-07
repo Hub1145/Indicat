@@ -3,7 +3,7 @@ import numpy as np
 import talib
 import ccxt
 import yfinance as yf
-from ta.trend import IchimokuIndicator
+import ta
 from scipy.signal import argrelextrema
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
@@ -30,11 +30,14 @@ class Candle(BaseModel):
 
 class UploadRequest(BaseModel):
     data: List[Candle]
+    indicators: Optional[List[str]] = None
 
 class MarketRequest(BaseModel):
     provider: Literal["crypto", "stock", "forex"]
     symbol: str
     timeframe: Literal["15m", "4h", "1d"]
+    exchange: Optional[str] = "binance"
+    indicators: Optional[List[str]] = None
 
 # --- Helpers ---
 
@@ -100,59 +103,133 @@ def detect_price_action(df: pd.DataFrame):
 
     return patterns
 
-def get_indicator_status(df: pd.DataFrame):
-    """Calculates indicator values and their human-readable status."""
-    cl = df['close'].values
+def get_indicator_status(df: pd.DataFrame, selected_indicators: Optional[List[str]] = None):
+    """Calculates indicators and filters them based on user selection."""
+    # List of 'ta' library columns to exclude if they have 'talib' equivalents
+    DUPLICATE_TA_FEATURES = [
+        'momentum_rsi', 'trend_macd', 'trend_macd_signal', 'trend_macd_diff',
+        'volatility_bbh', 'volatility_bbl', 'volatility_bbm', 'volatility_bbhi', 'volatility_bbli',
+        'volatility_atr', 'trend_adx', 'trend_adx_pos', 'trend_adx_neg',
+        'trend_sma_fast', 'trend_sma_slow', 'trend_ema_fast', 'trend_ema_slow',
+        'momentum_stoch', 'momentum_stoch_signal', 'momentum_wr', 'trend_cci',
+        'volume_obv', 'volume_adi', 'volume_mfi', 'trend_trix', 'momentum_roc'
+    ]
+
+    # 1. Prepare data for libraries
+    # The 'ta' library expects specific column names (Open, High, Low, Close, Volume)
+    ta_df = df.copy()
+    ta_df.columns = [c.capitalize() for c in ta_df.columns]
+
+    # 2. Add 'ta' library features (with deduplication)
+    try:
+        ta_df = ta.add_all_ta_features(
+            ta_df, open="Open", high="High", low="Low", close="Close", volume="Volume", fillna=False
+        )
+        # Remove duplicates
+        ta_df = ta_df.drop(columns=[c for c in DUPLICATE_TA_FEATURES if c in ta_df.columns])
+    except Exception as e:
+        print(f"Error adding 'ta' features: {e}")
+
+    # 3. Add ALL 'talib' candlestick patterns
+    op = df['open'].values
     hi = df['high'].values
     lo = df['low'].values
+    cl = df['close'].values
+    vo = df['volume'].values
 
-    # RSI
-    rsi = talib.RSI(cl, timeperiod=14)
-    current_rsi = rsi[-1]
+    talib_patterns = [f for f in talib.get_functions() if f.startswith('CDL')]
+    found_patterns = []
+
+    for pattern_func_name in talib_patterns:
+        func = getattr(talib, pattern_func_name)
+        # All CDL functions take (open, high, low, close)
+        result = func(op, hi, lo, cl)
+        ta_df[pattern_func_name] = result
+        if result[-1] != 0:
+            found_patterns.append({
+                "pattern": pattern_func_name,
+                "sentiment": "Bullish" if result[-1] > 0 else "Bearish"
+            })
+
+    # 4. Add key 'talib' indicators (comprehensive list)
+    talib_indicators = {}
+
+    # - Indicators taking 'close'
+    for func_name in ['SMA', 'EMA', 'WMA', 'DEMA', 'TEMA', 'TRIMA', 'KAMA', 'MAMA', 'T3', 'MOM', 'ROC', 'ROCP', 'ROCR', 'ROCR100', 'TRIX', 'STDDEV', 'TSF', 'VAR', 'RSI']:
+        try:
+            res = getattr(talib, func_name)(cl)
+            if isinstance(res, tuple):
+                for i, r in enumerate(res):
+                    ta_df[f"talib_{func_name}_{i}"] = r
+            else:
+                ta_df[f"talib_{func_name}"] = res
+        except: pass
+
+    # - Indicators taking 'high, low, close'
+    for func_name in ['ADX', 'ADXR', 'ATR', 'NATR', 'WILLR', 'CCI', 'DX', 'MINUS_DI', 'MINUS_DM', 'PLUS_DI', 'PLUS_DM', 'ULTOSC', 'MEDPRICE', 'TYPPRICE', 'WCLPRICE', 'SAR']:
+        try:
+            res = getattr(talib, func_name)(hi, lo, cl)
+            if isinstance(res, tuple):
+                for i, r in enumerate(res):
+                    ta_df[f"talib_{func_name}_{i}"] = r
+            else:
+                ta_df[f"talib_{func_name}"] = res
+        except: pass
+
+    # - Indicators taking 'high, low, close, volume'
+    for func_name in ['MFI', 'AD', 'ADOSC', 'OBV']:
+        try:
+            res = getattr(talib, func_name)(hi, lo, cl, vo)
+            if isinstance(res, tuple):
+                for i, r in enumerate(res):
+                    ta_df[f"talib_{func_name}_{i}"] = r
+            else:
+                ta_df[f"talib_{func_name}"] = res
+        except: pass
+
+    # - Special cases (Multi-output with names)
+    try:
+        macd, signal, hist = talib.MACD(cl)
+        ta_df['talib_MACD'], ta_df['talib_MACD_signal'], ta_df['talib_MACD_hist'] = macd, signal, hist
+    except: pass
+
+    try:
+        upper, mid, lower = talib.BBANDS(cl)
+        ta_df['talib_BB_upper'], ta_df['talib_BB_mid'], ta_df['talib_BB_lower'] = upper, mid, lower
+    except: pass
+
+    try:
+        slowk, slowd = talib.STOCH(hi, lo, cl)
+        ta_df['talib_STOCH_k'], ta_df['talib_STOCH_d'] = slowk, slowd
+    except: pass
+
+    try:
+        aroondown, aroonup = talib.AROON(hi, lo)
+        ta_df['talib_AROON_down'], ta_df['talib_AROON_up'] = aroondown, aroonup
+    except: pass
+
+    # 5. Summary and Status Logic
+    current_rsi = ta_df['talib_RSI'].iloc[-1] if 'talib_RSI' in ta_df else 50
+    ema200 = talib.EMA(cl, timeperiod=min(len(cl), 200))
+    current_close = cl[-1]
+
+    # Status Logic
     rsi_status = "Neutral"
     if current_rsi > 70: rsi_status = "Overbought"
     elif current_rsi < 30: rsi_status = "Oversold"
 
-    # Bollinger Bands
-    upper, mid, lower = talib.BBANDS(cl, timeperiod=20)
-    current_close = cl[-1]
     bb_status = "Inside Bands"
     if current_close >= upper[-1]: bb_status = "Touching Upper Band"
     elif current_close <= lower[-1]: bb_status = "Touching Lower Band"
 
-    # MACD
-    macd, signal, hist = talib.MACD(cl)
     macd_status = "Neutral"
-    if macd[-1] > signal[-1] and macd[-2] <= signal[-2]:
-        macd_status = "Bullish Crossover"
-    elif macd[-1] < signal[-1] and macd[-2] >= signal[-2]:
-        macd_status = "Bearish Crossover"
+    if len(macd) > 1:
+        if macd[-1] > signal[-1] and macd[-2] <= signal[-2]:
+            macd_status = "Bullish Crossover"
+        elif macd[-1] < signal[-1] and macd[-2] >= signal[-2]:
+            macd_status = "Bearish Crossover"
 
-    # EMA 200 Trend
-    ema200 = talib.EMA(cl, timeperiod=min(len(cl), 200))
     trend = "Bullish" if current_close > ema200[-1] else "Bearish"
-
-    # Candlestick Patterns (Using full series for context, then checking latest 3)
-    op = df['open'].values
-    candlestick_patterns = []
-
-    # Run on full series
-    hammers = talib.CDLHAMMER(op, hi, lo, cl)
-    dojis = talib.CDLDOJI(op, hi, lo, cl)
-    engulfing = talib.CDLENGULFING(op, hi, lo, cl)
-
-    # Check latest 3
-    if any(hammers[-3:] != 0): candlestick_patterns.append("Hammer")
-    if any(dojis[-3:] != 0): candlestick_patterns.append("Doji")
-    if any(engulfing[-3:] != 0): candlestick_patterns.append("Engulfing")
-
-    # Price Action Patterns
-    price_action_patterns = detect_price_action(df)
-
-    # Ichimoku Cloud
-    ichimoku = IchimokuIndicator(high=df['high'], low=df['low'])
-    span_a = ichimoku.ichimoku_a()
-    span_b = ichimoku.ichimoku_b()
 
     # Summary Signal Logic
     score = 0
@@ -169,25 +246,70 @@ def get_indicator_status(df: pd.DataFrame):
     if score >= 1.5: signal_str = "Buy"
     elif score <= -1.5: signal_str = "Sell"
 
-    return {
-        "current_price": float(current_close),
-        "indicators": {
-            "rsi": {"value": float(current_rsi), "status": rsi_status},
-            "bbands": {"upper": float(upper[-1]), "lower": float(lower[-1]), "status": bb_status},
-            "macd": {"value": float(macd[-1]), "status": macd_status},
-            "ema200": {"value": float(ema200[-1]), "status": trend},
-            "ichimoku": {"span_a": float(span_a.iloc[-1]), "span_b": float(span_b.iloc[-1])}
-        },
-        "candlestick_patterns": candlestick_patterns,
-        "price_action_patterns": price_action_patterns,
-        "summary_signal": signal_str
+    # Price Action
+    price_action = detect_price_action(df)
+
+    # Categorize indicators for a cleaner response
+    latest = ta_df.iloc[-1].to_dict()
+
+    # Filtering logic
+    if selected_indicators:
+        # Normalize selected indicators to lowercase for easier matching
+        selected_lower = [i.lower() for i in selected_indicators]
+        filtered_latest = {k: v for k, v in latest.items() if k.lower() in selected_lower}
+
+        # If the user selected specific indicators, we just return those in a flat list
+        # plus the summary and price action (which are always included)
+        return {
+            "current_price": float(current_close),
+            "summary": {
+                "signal": signal_str,
+                "trend": trend,
+                "rsi_status": rsi_status,
+                "bb_status": bb_status,
+                "macd_status": macd_status
+            },
+            "selected_indicators": filtered_latest,
+            "patterns_detected": [p for p in found_patterns if p['pattern'].lower() in selected_lower] if found_patterns else [],
+            "price_action": price_action
+        }
+
+    categorized = {
+        "trend": {k: v for k, v in latest.items() if "trend" in k.lower() or "ema" in k.lower() or "sma" in k.lower()},
+        "momentum": {k: v for k, v in latest.items() if "momentum" in k.lower() or "rsi" in k.lower() or "macd" in k.lower() or "stoch" in k.lower()},
+        "volatility": {k: v for k, v in latest.items() if "volatility" in k.lower() or "bb" in k.lower() or "atr" in k.lower()},
+        "volume": {k: v for k, v in latest.items() if "volume" in k.lower() or "obv" in k.lower() or "ad" in k.lower()},
+        "candlestick_patterns": {k: v for k, v in latest.items() if k.startswith("CDL")},
+        "others": {k: v for k, v in latest.items() if not any(x in k.lower() for x in ["trend", "momentum", "volatility", "volume", "rsi", "macd", "stoch", "bb", "atr", "obv", "ad", "ema", "sma"]) and not k.startswith("CDL")}
     }
 
-async def fetch_market_data(provider: str, symbol: str, timeframe: str):
+    return {
+        "current_price": float(current_close),
+        "summary": {
+            "signal": signal_str,
+            "trend": trend,
+            "rsi_status": rsi_status,
+            "bb_status": bb_status,
+            "macd_status": macd_status
+        },
+        "indicators": categorized,
+        "patterns_detected": found_patterns,
+        "price_action": price_action
+    }
+
+async def fetch_market_data(provider: str, symbol: str, timeframe: str, exchange_id: str = "binance"):
     """Fetches data from CCXT or yfinance."""
     if provider == "crypto":
-        # Using Kraken as Binance is restricted in some environments
-        exchange = ccxt.kraken()
+        try:
+            exchange_class = getattr(ccxt, exchange_id)
+            exchange = exchange_class()
+        except:
+            # Fallback to binance then kraken if specified exchange fails
+            try:
+                exchange = ccxt.binance()
+            except:
+                exchange = ccxt.kraken()
+
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=200)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     else:
@@ -231,22 +353,25 @@ async def analyze_upload(request: UploadRequest):
 
     df = pd.DataFrame([c.model_dump() for c in request.data])
 
-    analysis = get_indicator_status(df)
+    analysis = get_indicator_status(df, request.indicators)
     return clean_dict(analysis)
 
 @app.post("/analyze/market")
 async def analyze_market(request: MarketRequest):
-    cache_key = f"{request.provider}_{request.symbol}_{request.timeframe}"
+    # Include indicators in cache key to avoid returning wrong filtered results
+    indicators_key = ",".join(sorted(request.indicators)) if request.indicators else "all"
+    cache_key = f"{request.provider}_{request.symbol}_{request.timeframe}_{request.exchange}_{indicators_key}"
+
     cached_res = cache.get(cache_key)
     if cached_res:
         return cached_res
 
     try:
-        df = await fetch_market_data(request.provider, request.symbol, request.timeframe)
+        df = await fetch_market_data(request.provider, request.symbol, request.timeframe, request.exchange)
         if df.empty:
             raise HTTPException(status_code=404, detail="No data found for symbol.")
 
-        analysis = get_indicator_status(df)
+        analysis = get_indicator_status(df, request.indicators)
 
         response = {
             "meta_data": {
