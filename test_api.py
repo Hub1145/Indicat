@@ -84,6 +84,36 @@ def test_confluence():
     resp = requests.post("http://127.0.0.1:8000/confluence-score", json=payload)
     print(resp.json())
 
+def test_mtf():
+    print("\nTesting /analyze/mtf...")
+    payload = {
+        "provider": "crypto",
+        "symbol": "BTC/USD",
+        "timeframes": ["1h", "1d"]
+    }
+    resp = requests.post("http://127.0.0.1:8000/analyze/mtf", json=payload)
+    print(f"MTF timeframes analyzed: {list(resp.json().get('timeframes', {}).keys())}")
+
+def test_correlation():
+    print("\nTesting /analyze/correlation...")
+    payload = {
+        "assets": ["BTC/USD", "ETH/USD"],
+        "provider": "crypto"
+    }
+    resp = requests.post("http://127.0.0.1:8000/analyze/correlation", json=payload)
+    print(resp.json())
+
+def test_greeks():
+    print("\nTesting /options/greeks...")
+    payload = {
+        "underlying_price": 60000,
+        "strike": 62000,
+        "expiry": "2025-12-31",
+        "volatility": 0.5
+    }
+    resp = requests.post("http://127.0.0.1:8000/options/greeks", json=payload)
+    print(resp.json())
+
 def test_stock():
     print("\nTesting /analyze/market (Stock)...")
     payload = {
@@ -103,6 +133,9 @@ if __name__ == "__main__":
         test_scan_patterns()
         test_is_trend_bullish()
         test_confluence()
+        test_mtf()
+        test_correlation()
+        test_greeks()
         test_stock()
     except Exception as e:
         print(f"Error: {e}")

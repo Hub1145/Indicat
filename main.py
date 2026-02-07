@@ -5,33 +5,28 @@ import ccxt
 import yfinance as yf
 import ta
 from scipy.signal import argrelextrema
-from fastapi import FastAPI, HTTPException, Depends
+from scipy.stats import norm
+from fastapi import FastAPI, HTTPException, Depends, Header
 from pydantic import BaseModel, Field
-from typing import List, Optional, Literal, Set
+from typing import List, Optional, Literal, Dict, Any
 import diskcache
 import time
 import asyncio
 import os
-from fastapi import Header, Security
 from datetime import datetime
 
-app = FastAPI(title="Master Trader TA API")
+app = FastAPI(title="Pro-Trader Ultimate TA-as-a-Service API")
 
 # --- Monetization & Security ---
-# Set this in your environment or .env file
 RAPIDAPI_SECRET = os.getenv("RAPIDAPI_PROXY_SECRET", "dev_secret")
 
 async def verify_rapidapi_key(x_rapidapi_proxy_secret: str = Header(None)):
-    """Middleware to verify requests from RapidAPI or other proxies."""
-    # In development mode (secret == "dev_secret"), we bypass the check if header is missing
-    if RAPIDAPI_SECRET == "dev_secret":
-        return True
+    if RAPIDAPI_SECRET == "dev_secret": return True
     if x_rapidapi_proxy_secret != RAPIDAPI_SECRET:
         raise HTTPException(status_code=403, detail="Unauthorized access. Invalid API Key.")
     return True
 
-# --- Caching Setup ---
-# Cache results for 60 seconds
+# --- Caching ---
 cache = diskcache.Cache("./cache")
 
 # --- Models ---
@@ -45,703 +40,276 @@ class Candle(BaseModel):
     volume: float
 
 class UploadRequest(BaseModel):
-    data: List[Candle] = Field(..., max_length=2000, description="List of OHLCV candles (Max 2000)")
+    data: List[Candle] = Field(..., max_length=2000)
     indicators: Optional[List[str]] = None
     include_history: bool = False
 
 class MarketRequest(BaseModel):
     provider: Literal["crypto", "stock", "forex"]
     symbol: str
-    timeframe: Literal["15m", "4h", "1d"]
+    timeframe: Literal["15m", "1h", "4h", "1d"]
     exchange: Optional[str] = "binance"
     indicators: Optional[List[str]] = None
     include_history: bool = False
 
-# --- Helpers ---
+class MTFRequest(BaseModel):
+    provider: Literal["crypto", "stock", "forex"]
+    symbol: str
+    timeframes: List[Literal["15m", "1h", "4h", "1d"]]
+    exchange: Optional[str] = "binance"
+    indicators: Optional[List[str]] = None
+
+class CorrelationRequest(BaseModel):
+    assets: List[str]
+    provider: Literal["crypto", "stock", "forex"] = "crypto"
+    timeframe: str = "1d"
+
+class OptionsRequest(BaseModel):
+    underlying_price: float
+    strike: float
+    expiry: str
+    volatility: float
+    risk_free_rate: float = 0.05
+    option_type: Literal["call", "put"] = "call"
+
+class HeatmapRequest(BaseModel):
+    assets: List[str]
+    provider: Literal["crypto", "stock", "forex"] = "crypto"
+    metric: str = "RSI"
+
+# --- Metadata ---
 
 INDICATOR_METADATA = {
     "technical_indicators": {
-        "SMA": "Simple Moving Average",
-        "EMA": "Exponential Moving Average",
-        "WMA": "Weighted Moving Average",
-        "DEMA": "Double Exponential Moving Average",
-        "TEMA": "Triple Exponential Moving Average",
-        "TRIMA": "Triangular Moving Average",
-        "KAMA": "Kaufman Adaptive Moving Average",
-        "MAMA": "MESA Adaptive Moving Average",
-        "T3": "Triple Exponential Moving Average (T3)",
-        "MOM": "Momentum",
-        "ROC": "Rate of Change",
-        "ROCP": "Rate of Change Percentage",
-        "ROCR": "Rate of Change Ratio",
-        "ROCR100": "Rate of Change Ratio 100 Scale",
-        "TRIX": "Triple Exponential TRIX",
-        "STDDEV": "Standard Deviation",
-        "TSF": "Time Series Forecast",
-        "VAR": "Variance",
-        "RSI": "Relative Strength Index",
-        "ADX": "Average Directional Movement Index",
-        "ADXR": "Average Directional Movement Index Rating",
-        "ATR": "Average True Range",
-        "NATR": "Normalized Average True Range",
-        "WILLR": "Williams %R",
-        "CCI": "Commodity Channel Index",
-        "DX": "Directional Movement Index",
-        "MINUS_DI": "Minus Directional Indicator",
-        "MINUS_DM": "Minus Directional Movement",
-        "PLUS_DI": "Plus Directional Indicator",
-        "PLUS_DM": "Plus Directional Movement",
-        "ULTOSC": "Ultimate Oscillator",
-        "MEDPRICE": "Median Price",
-        "TYPPRICE": "Typical Price",
-        "WCLPRICE": "Weighted Close Price",
-        "SAR": "Parabolic SAR",
-        "MFI": "Money Flow Index",
-        "AD": "Chaikin A/D Line",
-        "ADI": "Accumulation/Distribution Index",
-        "ADOSC": "Chaikin A/D Oscillator",
-        "OBV": "On Balance Volume",
-        "MACD": "Moving Average Convergence Divergence",
-        "MACD_SIGNAL": "MACD Signal Line",
-        "MACD_HIST": "MACD Histogram",
-        "BBANDS": "Bollinger Bands",
-        "BOLLINGER_HIGH": "Bollinger Upper Band",
-        "BOLLINGER_LOW": "Bollinger Lower Band",
-        "BOLLINGER_MID": "Bollinger Middle Band",
-        "STOCH": "Stochastic Oscillator",
-        "STOCH_K": "Stochastic %K",
-        "STOCH_D": "Stochastic %D",
-        "AROON": "Aroon Oscillator",
-        "AROON_UP": "Aroon Up",
-        "AROON_DOWN": "Aroon Down",
-        "VWAP": "Volume Weighted Average Price",
-        "VPT": "Volume-Price Trend",
-        "NVI": "Negative Volume Index",
-        "CMF": "Chaikin Money Flow",
-        "FI": "Force Index",
-        "EM": "Ease of Movement",
-        "SMA_FAST": "Fast Simple Moving Average",
-        "SMA_SLOW": "Slow Simple Moving Average",
-        "EMA_FAST": "Fast Exponential Moving Average",
-        "EMA_SLOW": "Slow Exponential Moving Average",
-        "VORTEX_POS": "Vortex Indicator Positive",
-        "VORTEX_NEG": "Vortex Indicator Negative",
-        "MASS_INDEX": "Mass Index",
-        "DPO": "Detrended Price Oscillator",
-        "KST": "Know Sure Thing Oscillator",
-        "ICHIMOKU_A": "Ichimoku Leading Span A",
-        "ICHIMOKU_B": "Ichimoku Leading Span B",
-        "STC": "Schaff Trend Cycle",
-        "UI": "Ulcer Index",
-        "PSAR": "Parabolic SAR (ta implementation)",
-        "EMA20": "Exponential Moving Average 20 Period",
-        "EMA50": "Exponential Moving Average 50 Period",
-        "EMA200": "Exponential Moving Average 200 Period",
-        "SMA20": "Simple Moving Average 20 Period"
+        "SMA": "Simple Moving Average", "EMA": "Exponential Moving Average", "WMA": "Weighted Moving Average",
+        "RSI": "Relative Strength Index", "ADX": "Average Directional Index", "ATR": "Average True Range",
+        "MACD": "Moving Average Convergence Divergence", "BBANDS": "Bollinger Bands",
+        "VWAP": "Volume Weighted Average Price", "OBV": "On Balance Volume", "CMF": "Chaikin Money Flow",
+        "EMA20": "20-Period EMA", "EMA50": "50-Period EMA", "EMA200": "200-Period EMA"
     },
-    "candlestick_patterns": {
-        "CDL2CROWS": "Two Crows",
-        "CDL3BLACKCROWS": "Three Black Crows",
-        "CDL3INSIDE": "Three Inside Up/Down",
-        "CDL3LINESTRIKE": "Three-Line Strike",
-        "CDL3OUTSIDE": "Three Outside Up/Down",
-        "CDL3STARSINSOUTH": "Three Stars In The South",
-        "CDL3WHITESOLDIERS": "Three White Soldiers",
-        "CDLABANDONEDBABY": "Abandoned Baby",
-        "CDLADVANCEBLOCK": "Advance Block",
-        "CDLBELTHOLD": "Belt-hold",
-        "CDLBREAKAWAY": "Breakaway",
-        "CDLCLOSINGMARUBOZU": "Closing Marubozu",
-        "CDLCONCEALBABYSWALL": "Concealed Baby Swallow",
-        "CDLCOUNTERATTACK": "Counterattack",
-        "CDLDARKCLOUDCOVER": "Dark Cloud Cover",
-        "CDLDOJI": "Doji",
-        "CDLDOJISTAR": "Doji Star",
-        "CDLDRAGONFLYDOJI": "Dragonfly Doji",
-        "CDLENGULFING": "Engulfing Pattern",
-        "CDLEVENINGDOJISTAR": "Evening Doji Star",
-        "CDLEVENINGSTAR": "Evening Star",
-        "CDLGAPSIDESIDEWHITE": "Up/Down-gap Side-by-side White Lines",
-        "CDLGRAVESTONEDOJI": "Gravestone Doji",
-        "CDLHAMMER": "Hammer",
-        "CDLHANGINGMAN": "Hanging Man",
-        "CDLHARAMI": "Harami Pattern",
-        "CDLHARAMICROSS": "Harami Cross Pattern",
-        "CDLHIGHWAVE": "High-Wave Candle",
-        "CDLHIKKAKE": "Hikkake Pattern",
-        "CDLHIKKAKEMOD": "Modified Hikkake Pattern",
-        "CDLHOMINGPIGEON": "Homing Pigeon",
-        "CDLIDENTICAL3CROWS": "Identical Three Crows",
-        "CDLINNECK": "In-Neck Pattern",
-        "CDLINVERTEDHAMMER": "Inverted Hammer",
-        "CDLKICKING": "Kicking",
-        "CDLKICKINGBYLENGTH": "Kicking - bull/bear determined by the longer marubozu",
-        "CDLLADDERBOTTOM": "Ladder Bottom",
-        "CDLLONGLEGGEDDOJI": "Long Legged Doji",
-        "CDLLONGLINE": "Long Line Candle",
-        "CDLMARUBOZU": "Marubozu",
-        "CDLMATCHINGLOW": "Matching Low",
-        "CDLMATHOLD": "Mat Hold",
-        "CDLMORNINGDOJISTAR": "Morning Doji Star",
-        "CDLMORNINGSTAR": "Morning Star",
-        "CDLONNECK": "On-Neck Pattern",
-        "CDLPIERCING": "Piercing Pattern",
-        "CDLRICKSHAWMAN": "Rickshaw Man",
-        "CDLRISEFALL3METHODS": "Rising/Falling Three Methods",
-        "CDLSEPARATINGLINES": "Separating Lines",
-        "CDLSHOOTINGSTAR": "Shooting Star",
-        "CDLSHORTLINE": "Short Line Candle",
-        "CDLSPINNINGTOP": "Spinning Top",
-        "CDLSTALLEDPATTERN": "Stalled Pattern",
-        "CDLSTICKSANDWICH": "Stick Sandwich",
-        "CDLTAKURI": "Takuri (Dragonfly Doji with very long lower shadow)",
-        "CDLTASUKIGAP": "Tasuki Gap",
-        "CDLTHRUSTING": "Thrusting Pattern",
-        "CDLTRISTAR": "Tristar Pattern",
-        "CDLUNIQUE3RIVER": "Unique 3 River",
-        "CDLUPSIDEGAP2CROWS": "Upside Gap Two Crows",
-        "CDLXSIDEGAP3METHODS": "Upside/Downside Gap Three Methods"
-    },
-    "price_action": {
+    "patterns": {
+        "CDLDOJI": "Doji", "CDLHAMMER": "Hammer", "CDLENGULFING": "Engulfing",
         "Head and Shoulders": "Head and Shoulders Reversal",
-        "Double Top": "Double Top Reversal",
-        "Double Bottom": "Double Bottom Reversal",
-        "Symmetrical Triangle": "Symmetrical Triangle Consolidation",
-        "Descending Triangle": "Descending Triangle Bearish",
-        "Ascending Triangle": "Ascending Triangle Bullish"
+        "Double Top": "Double Top", "Double Bottom": "Double Bottom",
+        "Ascending Triangle": "Ascending Triangle", "Descending Triangle": "Descending Triangle"
     },
-    "smc_ict": {
-        "Fair Value Gap (FVG)": "Fair Value Gap (Imbalance)",
-        "Order Block (OB)": "Institutional Order Block",
-        "Market Structure Shift (MSS)": "Market Structure Shift / Break of Structure"
-    },
-    "levels_sessions": {
-        "Support": "Horizontal Support Level",
-        "Resistance": "Horizontal Resistance Level",
-        "Tokyo": "Tokyo Trading Session",
-        "London": "London Trading Session",
-        "NewYork": "New York Trading Session"
-    },
-    "liquidity": {
-        "BSL": "Buy Side Liquidity (Above Peaks)",
-        "SSL": "Sell Side Liquidity (Below Valleys)"
+    "institutional_strategies": {
+        "FVG": "Fair Value Gap (Liquidity Imbalance)",
+        "OB": "Institutional Order Block",
+        "MSS": "Market Structure Shift"
     }
 }
 
+# --- Core Logic Helpers ---
+
 def clean_dict(d):
-    """Recursively replaces NaN with None for JSON compatibility."""
-    if isinstance(d, dict):
-        return {k: clean_dict(v) for k, v in d.items()}
-    elif isinstance(d, list):
-        return [clean_dict(v) for v in d]
-    elif isinstance(d, (float, np.float64, np.float32)):
-        if np.isnan(d) or np.isinf(d):
-            return None
-        return float(d)
+    if isinstance(d, dict): return {k: clean_dict(v) for k, v in d.items()}
+    if isinstance(d, list): return [clean_dict(v) for v in d]
+    if isinstance(d, (float, np.float64, np.float32)):
+        return None if np.isnan(d) or np.isinf(d) else float(d)
     return d
 
-def detect_price_action(df: pd.DataFrame):
-    """Detects Head and Shoulders, Double Top/Bottom, and Triangles."""
-    close = df['close'].values
-    high = df['high'].values
-    low = df['low'].values
-
-    # Find pivots (order=5 means 5 candles on each side)
-    peak_idx = argrelextrema(high, np.greater, order=5)[0]
-    valley_idx = argrelextrema(low, np.less, order=5)[0]
-
-    peaks = high[peak_idx]
-    valleys = low[valley_idx]
-
-    patterns = []
-
-    # 1. Head and Shoulders
-    if len(peaks) >= 3:
-        p1, p2, p3 = peaks[-3], peaks[-2], peaks[-1]
-        if p2 > p1 and p2 > p3:
-            # Check if shoulders are similar height (within 10%)
-            if abs(p1 - p3) / max(p1, p3) < 0.1:
-                patterns.append("Head and Shoulders")
-
-    # 2. Double Top
-    if len(peaks) >= 2:
-        p1, p2 = peaks[-2], peaks[-1]
-        if abs(p1 - p2) / max(p1, p2) < 0.02: # Within 2%
-            patterns.append("Double Top")
-
-    # 3. Double Bottom
-    if len(valleys) >= 2:
-        v1, v2 = valleys[-2], valleys[-1]
-        if abs(v1 - v2) / max(v1, v2) < 0.02:
-            patterns.append("Double Bottom")
-
-    # 4. Triangles (Descending/Ascending/Symmetrical)
-    if len(peaks) >= 2 and len(valleys) >= 2:
-        # Check slopes of recent 2 pivots
-        high_slope = (peaks[-1] - peaks[-2]) / (peak_idx[-1] - peak_idx[-2])
-        low_slope = (valleys[-1] - valleys[-2]) / (valley_idx[-1] - valley_idx[-2])
-
-        if high_slope < 0 and low_slope > 0:
-            patterns.append("Symmetrical Triangle")
-        elif high_slope < 0 and abs(low_slope) < 0.001:
-            patterns.append("Descending Triangle")
-        elif low_slope > 0 and abs(high_slope) < 0.001:
-            patterns.append("Ascending Triangle")
-
-    return patterns
-
-def get_sessions(timestamp_str: Optional[str]) -> List[str]:
-    """Identifies trading sessions for a given UTC timestamp string."""
-    if not timestamp_str: return []
-    try:
-        # Handle numeric timestamps (ms) or strings
-        if str(timestamp_str).isdigit():
-            dt = datetime.fromtimestamp(int(timestamp_str)/1000.0)
-        else:
-            dt = datetime.fromisoformat(str(timestamp_str).replace('Z', '+00:00'))
-
-        hour = dt.hour
-        sessions = []
-        if 0 <= hour < 9: sessions.append("Tokyo")
-        if 8 <= hour < 17: sessions.append("London")
-        if 13 <= hour < 22: sessions.append("NewYork")
-        return sessions
-    except:
-        return []
-
-def detect_sr_levels(df: pd.DataFrame):
-    """Detects horizontal Support and Resistance levels using pivot clustering."""
-    high = df['high'].values
-    low = df['low'].values
-
-    # Use pivots
-    peak_idx = argrelextrema(high, np.greater, order=10)[0]
-    valley_idx = argrelextrema(low, np.less, order=10)[0]
-
-    peaks = high[peak_idx]
-    valleys = low[valley_idx]
-
-    # Cluster levels that are within 1% of each other
-    all_pivots = np.concatenate([peaks, valleys])
-    if len(all_pivots) == 0: return []
-
-    all_pivots.sort()
-
-    # Simple clustering
-    groups = []
-    if len(all_pivots) > 0:
-        current_group = [all_pivots[0]]
-        for i in range(1, len(all_pivots)):
-            if (all_pivots[i] - np.mean(current_group)) / np.mean(current_group) < 0.01:
-                current_group.append(all_pivots[i])
-            else:
-                groups.append(np.mean(current_group))
-                current_group = [all_pivots[i]]
-        groups.append(np.mean(current_group))
-
-    current_price = df['close'].iloc[-1]
-    sr_data = []
-    for level in groups:
-        type_str = "Resistance" if level > current_price else "Support"
-        sr_data.append({"type": type_str, "price": float(level)})
-
-    return sr_data
-
-def detect_smc_concepts(df: pd.DataFrame):
-    """Detects SMC/ICT concepts: Fair Value Gaps, Order Blocks, and Market Structure Shifts."""
-    high = df['high'].values
-    low = df['low'].values
-    close = df['close'].values
-
-    fvgs = []
-    order_blocks = []
-    mss = "None"
-
-    # 1. Fair Value Gaps (FVG) - Look at last 10 candles for relevant gaps
-    # Bullish FVG: low[i] > high[i-2]
-    # Bearish FVG: high[i] < low[i-2]
-    for i in range(len(df)-1, len(df)-11, -1):
-        if i < 2: break
-        # Bullish FVG
-        if low[i] > high[i-2]:
-            fvgs.append({"type": "Bullish FVG", "top": low[i], "bottom": high[i-2], "index": i-1})
-        # Bearish FVG
-        elif high[i] < low[i-2]:
-            fvgs.append({"type": "Bearish FVG", "top": low[i-2], "bottom": high[i], "index": i-1})
-
-    # 2. Order Blocks (OB) - Simplified: Last opposite candle before a significant move
-    # Looking for a "displacement" move (ATR based)
-    atr = talib.ATR(high, low, close, timeperiod=14)
-    for i in range(len(df)-2, len(df)-12, -1):
-        if i < 1: break
-        move = close[i+1] - close[i]
-        if abs(move) > 2 * atr[i]: # Strong displacement
-            if move > 0: # Bullish displacement
-                order_blocks.append({"type": "Bullish OB", "price": close[i], "index": i})
-            else: # Bearish displacement
-                order_blocks.append({"type": "Bearish OB", "price": close[i], "index": i})
-
-    # 3. Market Structure Shift (MSS)
-    # Check if last candle closed above recent peak or below recent valley
-    peak_idx = argrelextrema(high, np.greater, order=5)[0]
-    valley_idx = argrelextrema(low, np.less, order=5)[0]
-
-    if len(peak_idx) > 0 and close[-1] > high[peak_idx[-1]]:
-        mss = "Bullish MSS"
-    elif len(valley_idx) > 0 and close[-1] < low[valley_idx[-1]]:
-        mss = "Bearish MSS"
-
-    return {
-        "fair_value_gaps": fvgs[:3], # Return top 3 recent
-        "order_blocks": order_blocks[:3],
-        "market_structure_shift": mss
-    }
-
-def detect_liquidity(df: pd.DataFrame):
-    """Identifies potential liquidity zones above recent peaks and below recent valleys."""
-    high = df['high'].values
-    low = df['low'].values
-
-    # Large order (10) for significant liquidity
-    peak_idx = argrelextrema(high, np.greater, order=10)[0]
-    valley_idx = argrelextrema(low, np.less, order=10)[0]
-
-    bsl = [{"price": float(high[i]), "index": int(i)} for i in peak_idx[-3:]] # Buy side liquidity
-    ssl = [{"price": float(low[i]), "index": int(i)} for i in valley_idx[-3:]] # Sell side liquidity
-
-    return {"buy_side_liquidity": bsl, "sell_side_liquidity": ssl}
-
 def clean_column_name(name: str) -> str:
-    """Converts internal library names to clean, user-friendly names."""
-    orig_name = name
-    # Remove common prefixes
     for prefix in ["talib_", "trend_", "momentum_", "volatility_", "volume_", "others_"]:
         if name.startswith(prefix):
             name = name[len(prefix):]
             break
-
-    # Specific mappings for common indicators
     mapping = {
-        "bbh": "Bollinger_High",
-        "bbl": "Bollinger_Low",
-        "bbm": "Bollinger_Mid",
-        "macd_signal": "MACD_Signal",
-        "macd_diff": "MACD_Hist",
-        "stoch_rsi": "Stoch_RSI",
-        "ema_fast": "EMA_Fast",
-        "ema_slow": "EMA_Slow",
-        "sma_fast": "SMA_Fast",
-        "sma_slow": "SMA_Slow",
-        "ema_20": "EMA20",
-        "ema_50": "EMA50",
-        "ema_200": "EMA200",
-        "sma_20": "SMA20",
+        "bbh": "Bollinger_High", "bbl": "Bollinger_Low", "bbm": "Bollinger_Mid",
+        "macd_signal": "MACD_Signal", "macd_diff": "MACD_Hist",
+        "ema_20": "EMA20", "ema_50": "EMA50", "ema_200": "EMA200", "sma_20": "SMA20"
     }
+    return mapping.get(name.lower(), name.upper())
 
-    # Check if name is already like EMA_20 (clean prefix was 'talib_')
-    if name.lower() in mapping:
-        return mapping[name.lower()]
+def get_sessions(timestamp_str: Optional[str]) -> List[str]:
+    if not timestamp_str: return []
+    try:
+        if str(timestamp_str).isdigit(): dt = datetime.fromtimestamp(int(timestamp_str)/1000.0)
+        else: dt = datetime.fromisoformat(str(timestamp_str).replace('Z', '+00:00'))
+        h = dt.hour
+        s = []
+        if 0 <= h < 9: s.append("Tokyo")
+        if 8 <= h < 17: s.append("London")
+        if 13 <= h < 22: s.append("New York")
+        return s
+    except: return []
 
-    # If it's something like CDLDOJI, just keep it or clean slightly
-    if name.startswith("CDL"):
-        return name
+def detect_sr_levels(df: pd.DataFrame):
+    cl = df['close'].values
+    p = argrelextrema(df['high'].values, np.greater, order=10)[0]
+    v = argrelextrema(df['low'].values, np.less, order=10)[0]
+    pivots = np.sort(np.concatenate([df['high'].values[p], df['low'].values[v]]))
+    if not len(pivots): return []
+    groups = []
+    curr = [pivots[0]]
+    for i in range(1, len(pivots)):
+        if (pivots[i] - np.mean(curr)) / np.mean(curr) < 0.01: curr.append(pivots[i])
+        else:
+            groups.append(np.mean(curr))
+            curr = [pivots[i]]
+    groups.append(np.mean(curr))
+    cp = cl[-1]
+    return [{"type": "Resistance" if l > cp else "Support", "price": float(l)} for l in groups]
 
-    return name.upper()
+def detect_smc_concepts(df: pd.DataFrame):
+    h, l, c = df['high'].values, df['low'].values, df['close'].values
+    fvgs, obs = [], []
+    for i in range(len(df)-1, len(df)-11, -1):
+        if i < 2: break
+        if l[i] > h[i-2]: fvgs.append({"type": "Bullish FVG", "top": float(l[i]), "bottom": float(h[i-2]), "index": i-1})
+        elif h[i] < l[i-2]: fvgs.append({"type": "Bearish FVG", "top": float(l[i-2]), "bottom": float(h[i]), "index": i-1})
 
-def get_indicator_status(df: pd.DataFrame, selected_indicators: Optional[List[str]] = None, include_history: bool = False):
-    """Calculates indicators and filters them based on user selection."""
-    # List of 'ta' library columns to exclude if they have 'talib' equivalents
-    DUPLICATE_TA_FEATURES = [
-        'momentum_rsi', 'trend_macd', 'trend_macd_signal', 'trend_macd_diff',
-        'volatility_bbh', 'volatility_bbl', 'volatility_bbm', 'volatility_bbhi', 'volatility_bbli',
-        'volatility_atr', 'trend_adx', 'trend_adx_pos', 'trend_adx_neg',
-        'trend_sma_fast', 'trend_sma_slow', 'trend_ema_fast', 'trend_ema_slow',
-        'momentum_stoch', 'momentum_stoch_signal', 'momentum_wr', 'trend_cci',
-        'volume_obv', 'volume_adi', 'volume_mfi', 'trend_trix', 'momentum_roc'
-    ]
+    atr = talib.ATR(h, l, c)
+    for i in range(len(df)-2, len(df)-12, -1):
+        move = c[i+1] - c[i]
+        if i < len(atr) and abs(move) > 2 * (atr[i] or 1):
+            obs.append({"type": "Bullish OB" if move > 0 else "Bearish OB", "price": float(c[i]), "index": i})
 
-    # 1. Prepare data for libraries
+    p = argrelextrema(h, np.greater, order=5)[0]
+    v = argrelextrema(l, np.less, order=5)[0]
+    mss = "None"
+    if len(p) and c[-1] > h[p[-1]]: mss = "Bullish MSS"
+    elif len(v) and c[-1] < l[v[-1]]: mss = "Bearish MSS"
+    return {"fvgs": fvgs[:3], "order_blocks": obs[:3], "mss": mss}
+
+def detect_divergences(df: pd.DataFrame, indicator: str = "RSI"):
+    c = df['close'].values
+    if indicator == "RSI": ind = talib.RSI(c)
+    elif indicator == "MACD": ind, _, _ = talib.MACD(c)
+    else: return None
+    v, p = argrelextrema(c, np.less, order=5)[0], argrelextrema(c, np.greater, order=5)[0]
+    divs = {"bullish": False, "bearish": False}
+    if len(v) >= 2 and len(ind) > max(v):
+        if c[v[-1]] < c[v[-2]] and ind[v[-1]] > ind[v[-2]]: divs["bullish"] = True
+    if len(p) >= 2 and len(ind) > max(p):
+        if c[p[-1]] > c[p[-2]] and ind[p[-1]] < ind[p[-2]]: divs["bearish"] = True
+    return divs
+
+def calculate_volume_profile(df: pd.DataFrame):
+    if df['volume'].sum() == 0: return None
+    bins = 20
+    counts, edges = np.histogram(df['close'], bins=bins, weights=df['volume'])
+    idx = np.argmax(counts)
+    return {"poc": float(edges[idx]), "vah": float(edges[min(idx+2, bins)]), "val": float(edges[max(idx-2, 0)])}
+
+def get_indicator_status(df: pd.DataFrame, selected: Optional[List[str]] = None, history: bool = False):
     ta_df = df.copy()
     ta_df.columns = [c.capitalize() for c in ta_df.columns]
-
-    # 2. Add 'ta' library features (with deduplication)
-    try:
-        ta_df = ta.add_all_ta_features(
-            ta_df, open="Open", high="High", low="Low", close="Close", volume="Volume", fillna=False
-        )
-        ta_df = ta_df.drop(columns=[c for c in DUPLICATE_TA_FEATURES if c in ta_df.columns])
-    except Exception as e:
-        print(f"Error adding 'ta' features: {e}")
-
-    # 3. Add ALL 'talib' candlestick patterns
-    op, hi, lo, cl, vo = df['open'].values, df['high'].values, df['low'].values, df['close'].values, df['volume'].values
-    talib_patterns = [f for f in talib.get_functions() if f.startswith('CDL')]
-    found_patterns = []
-    talib_results = {}
-
-    for pattern_func_name in talib_patterns:
-        func = getattr(talib, pattern_func_name)
-        result = func(op, hi, lo, cl)
-        talib_results[pattern_func_name] = result
-        if result[-1] != 0:
-            found_patterns.append({
-                "pattern": pattern_func_name,
-                "sentiment": "Bullish" if result[-1] > 0 else "Bearish"
-            })
-
-    # 4. Add key 'talib' indicators
-    upper, mid, lower = [np.array([])]*3
-    macd, signal, hist = [np.array([])]*3
-
-    for func_name in ['SMA', 'EMA', 'WMA', 'DEMA', 'TEMA', 'TRIMA', 'KAMA', 'MAMA', 'T3', 'MOM', 'ROC', 'ROCP', 'ROCR', 'ROCR100', 'TRIX', 'STDDEV', 'TSF', 'VAR', 'RSI']:
-        try:
-            res = getattr(talib, func_name)(cl)
-            if isinstance(res, tuple):
-                for i, r in enumerate(res): talib_results[f"talib_{func_name}_{i}"] = r
-            else: talib_results[f"talib_{func_name}"] = res
-        except: pass
-
-    for func_name in ['ADX', 'ADXR', 'ATR', 'NATR', 'WILLR', 'CCI', 'DX', 'MINUS_DI', 'MINUS_DM', 'PLUS_DI', 'PLUS_DM', 'ULTOSC', 'MEDPRICE', 'TYPPRICE', 'WCLPRICE', 'SAR']:
-        try:
-            res = getattr(talib, func_name)(hi, lo, cl)
-            if isinstance(res, tuple):
-                for i, r in enumerate(res): talib_results[f"talib_{func_name}_{i}"] = r
-            else: talib_results[f"talib_{func_name}"] = res
-        except: pass
-
-    for func_name in ['MFI', 'AD', 'ADOSC', 'OBV']:
-        try:
-            res = getattr(talib, func_name)(hi, lo, cl, vo)
-            if isinstance(res, tuple):
-                for i, r in enumerate(res): talib_results[f"talib_{func_name}_{i}"] = r
-            else: talib_results[f"talib_{func_name}"] = res
-        except: pass
-
-    try:
-        macd, signal, hist = talib.MACD(cl)
-        talib_results.update({'talib_MACD': macd, 'talib_MACD_signal': signal, 'talib_MACD_hist': hist})
-    except: pass
-    try:
-        upper, mid, lower = talib.BBANDS(cl)
-        talib_results.update({'talib_BB_upper': upper, 'talib_BB_mid': mid, 'talib_BB_lower': lower})
-    except: pass
-    try:
-        slowk, slowd = talib.STOCH(hi, lo, cl)
-        talib_results.update({'talib_STOCH_k': slowk, 'talib_STOCH_d': slowd})
-    except: pass
-    try:
-        aroondown, aroonup = talib.AROON(hi, lo)
-        talib_results.update({'talib_AROON_down': aroondown, 'talib_AROON_up': aroonup})
+    try: ta_df = ta.add_all_ta_features(ta_df, open="Open", high="High", low="Low", close="Close", volume="Volume", fillna=False)
     except: pass
 
-    talib_df = pd.DataFrame(talib_results, index=ta_df.index)
-    ta_df = pd.concat([ta_df, talib_df[[c for c in talib_df.columns if c not in ta_df.columns]]], axis=1)
-
-    # 5. Summary and Status Logic (Vectorized)
-    rsi_history = ta_df['talib_RSI'] if 'talib_RSI' in ta_df else pd.Series([50.0]*len(df))
-    ema200_history = talib.EMA(cl, timeperiod=min(len(cl), 200))
+    cl = df['close'].values
+    rsi = talib.RSI(cl)
+    ema200 = talib.EMA(cl, timeperiod=min(len(cl), 200))
     scores = pd.Series(0.0, index=df.index)
+    scores[rsi < 30] += 1
+    scores[rsi > 70] -= 1
+    scores[cl > ema200] += 0.5
+    scores[cl <= ema200] -= 0.5
+    df['signal'] = scores.apply(lambda s: "Buy" if s >= 1.5 else ("Sell" if s <= -1.5 else "Hold"))
 
-    scores[rsi_history < 30] += 1
-    scores[rsi_history > 70] -= 1
-    if len(upper) > 0:
-        scores[cl >= upper] -= 1
-        scores[cl <= lower] += 1
-    if macd is not None and len(macd) > 1:
-        macd_s, sig_s = pd.Series(macd, index=df.index), pd.Series(signal, index=df.index)
-        scores[(macd_s > sig_s) & (macd_s.shift(1) <= sig_s.shift(1))] += 1
-        scores[(macd_s < sig_s) & (macd_s.shift(1) >= sig_s.shift(1))] -= 1
-    scores[cl > ema200_history] += 0.5
-    scores[cl <= ema200_history] -= 0.5
+    latest = ta_df.iloc[-1].to_dict()
+    clean_latest = {clean_column_name(k): v for k, v in latest.items() if not selected or clean_column_name(k) in selected}
 
-    def score_to_signal(s):
-        if s >= 1.5: return "Buy"
-        elif s <= -1.5: return "Sell"
-        return "Hold"
-    df['signal'] = scores.apply(score_to_signal)
-
-    # 6. Final Clean Data Prep
-    new_cols, seen = [], set()
-    for c in ta_df.columns:
-        clean = clean_column_name(c)
-        if clean in seen:
-            if c.startswith("talib_"): clean = f"TALIB_{clean}"
-            elif "_" in c: clean = f"{c.split('_', 1)[0].upper()}_{clean}"
-            temp_clean, i = clean, 1
-            while temp_clean in seen:
-                temp_clean, i = f"{clean}_{i}", i + 1
-            clean = temp_clean
-        seen.add(clean)
-        new_cols.append(clean)
-    ta_df.columns = new_cols
-
-    price_action = detect_price_action(df)
-    smc = detect_smc_concepts(df)
-    levels = detect_sr_levels(df)
-    sessions = get_sessions(df['timestamp'].iloc[-1])
-    liquidity = detect_liquidity(df)
-
-    latest_idx = -1
-    rsi_status = "Neutral"
-    if rsi_history.iloc[latest_idx] > 70: rsi_status = "Overbought"
-    elif rsi_history.iloc[latest_idx] < 30: rsi_status = "Oversold"
-
-    bb_status = "Inside Bands"
-    if len(upper) > 0:
-        if cl[latest_idx] >= upper[latest_idx]: bb_status = "Touching Upper Band"
-        elif cl[latest_idx] <= lower[latest_idx]: bb_status = "Touching Lower Band"
-
-    # 7. Response Construction
-    if include_history:
-        output_df = df.copy()
-        for col in ta_df.columns:
-            if col not in output_df.columns: output_df[col] = ta_df[col]
-        if selected_indicators:
-            selected_clean = [clean_column_name(i) for i in selected_indicators]
-            keep = ['timestamp', 'open', 'high', 'low', 'close', 'volume', 'signal'] + [c for c in output_df.columns if c in selected_clean]
-            output_df = output_df[keep]
-        return {
-            "summary": {"signal": df['signal'].iloc[-1], "trend": "Bullish" if cl[-1] > ema200_history[-1] else "Bearish", "rsi_status": rsi_status},
-            "history": output_df.to_dict(orient="records")
-        }
-
-    latest_ind = ta_df.iloc[-1].to_dict()
-    if selected_indicators:
-        selected_clean = [clean_column_name(i) for i in selected_indicators]
-        latest_ind = {k: v for k, v in latest_ind.items() if k in selected_clean}
-
-    categorized = {
-        "trend": {k: v for k, v in latest_ind.items() if any(x in k.lower() for x in ["trend", "ema", "sma", "ichimoku", "psar", "adx", "aroon"])},
-        "momentum": {k: v for k, v in latest_ind.items() if any(x in k.lower() for x in ["momentum", "rsi", "macd", "stoch", "tsi", "uo", "roc", "ppo", "pvo", "kama"])},
-        "volatility": {k: v for k, v in latest_ind.items() if any(x in k.lower() for x in ["volatility", "bollinger", "atr", "ui", "kc", "dc"])},
-        "volume": {k: v for k, v in latest_ind.items() if any(x in k.lower() for x in ["volume", "obv", "adi", "mfi", "cmf", "fi", "em", "vpt", "vwap", "nvi", "ad"])},
-        "candlestick_patterns": {k: v for k, v in latest_ind.items() if k.startswith("CDL")},
-        "others": {k: v for k, v in latest_ind.items() if not any(x in k.lower() for x in ["trend", "momentum", "volatility", "volume", "rsi", "macd", "stoch", "bollinger", "atr", "obv", "ad", "ema", "sma", "psar", "ichimoku", "adx", "aroon", "tsi", "uo", "roc", "ppo", "pvo", "kama", "ui", "kc", "dc", "adi", "mfi", "cmf", "fi", "em", "vpt", "vwap", "nvi"]) and not k.startswith("CDL")}
-    }
-
-    return {
+    res = {
         "current_price": float(cl[-1]),
-        "summary": {"signal": df['signal'].iloc[-1], "trend": "Bullish" if cl[-1] > ema200_history[-1] else "Bearish", "rsi_status": rsi_status, "bb_status": bb_status},
-        "indicators": categorized if not selected_indicators else latest_ind,
-        "patterns_detected": [p for p in found_patterns if p['pattern'].lower() in [i.lower() for i in (selected_indicators or [])]] if selected_indicators else found_patterns,
-        "price_action": price_action,
-        "smc": smc,
-        "levels": levels,
-        "current_session": sessions,
-        "liquidity": liquidity
+        "summary": {"signal": df['signal'].iloc[-1], "trend": "Bullish" if cl[-1] > ema200[-1] else "Bearish", "session": get_sessions(df['timestamp'].iloc[-1])},
+        "levels": detect_sr_levels(df),
+        "smc": detect_smc_concepts(df),
+        "divergences": {"rsi": detect_divergences(df, "RSI"), "macd": detect_divergences(df, "MACD")},
+        "volume_profile": calculate_volume_profile(df)
     }
+    if history: res["history"] = df.tail(500).to_dict(orient="records")
+    else: res["indicators"] = clean_latest
+    return res
 
 async def fetch_market_data(provider: str, symbol: str, timeframe: str, exchange_id: str = "binance"):
-    """Fetches data from CCXT or yfinance."""
     if provider == "crypto":
-        try:
-            exchange_class = getattr(ccxt, exchange_id)
-            exchange = exchange_class()
-        except:
-            try: exchange = ccxt.binance()
-            except: exchange = ccxt.kraken()
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=200)
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        ex_id = exchange_id if exchange_id else "binance"
+        ex = getattr(ccxt, ex_id)()
+        ohlcv = ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=200)
+        return pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     else:
-        yf_map = {"15m": "15m", "4h": "1h", "1d": "1d"}
-        period_map = {"15m": "1mo", "4h": "1mo", "1d": "2y"}
-        ticker_symbol = symbol if provider == "stock" else f"{symbol}=X"
-        data = yf.download(ticker_symbol, period=period_map[timeframe], interval=yf_map[timeframe], progress=False)
+        yf_map = {"15m": "15m", "1h": "1h", "4h": "1h", "1d": "1d"}
+        data = yf.download(symbol if provider == "stock" else f"{symbol}=X", period="1y", interval=yf_map[timeframe], progress=False)
         if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
-        if timeframe == "4h": data = data.resample('4h').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
+        if timeframe == "4h": data = data.resample('4h').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last', 'Volume':'sum'}).dropna()
         df = data.tail(200).reset_index()
         df.columns = [str(c).lower() for c in df.columns]
-        if 'date' in df.columns: df = df.rename(columns={'date': 'timestamp'})
-        if 'datetime' in df.columns: df = df.rename(columns={'datetime': 'timestamp'})
-    return df
+        return df.rename(columns={'date': 'timestamp', 'datetime': 'timestamp'})
 
 # --- Endpoints ---
 
 @app.get("/indicators")
 async def get_available_indicators():
-    """Returns a categorized list of all available indicators and patterns with full descriptive names."""
-    def format_list(category_key):
-        items = INDICATOR_METADATA.get(category_key, {})
-        return [{"code": code, "full_name": full_name} for code, full_name in items.items()]
-    return {
-        "technical_indicators": format_list("technical_indicators"),
-        "candlestick_patterns": format_list("candlestick_patterns"),
-        "price_action": format_list("price_action"),
-        "smc_ict": format_list("smc_ict"),
-        "levels_and_sessions": format_list("levels_sessions"),
-        "liquidity": format_list("liquidity")
-    }
-
-@app.post("/analyze/upload", dependencies=[Depends(verify_rapidapi_key)])
-async def analyze_upload(request: UploadRequest):
-    if len(request.data) < 30: raise HTTPException(status_code=400, detail="Need at least 30 candles.")
-    data = request.data[-2000:]
-    df = pd.DataFrame([c.model_dump() for c in data])
-    analysis = get_indicator_status(df, request.indicators, request.include_history)
-    return clean_dict(analysis)
+    def fmt(cat):
+        return [{"code": k, "full_name": v} for k, v in INDICATOR_METADATA.get(cat, {}).items()]
+    return {"technical_indicators": fmt("technical_indicators"), "patterns": fmt("patterns"), "institutional": fmt("institutional_strategies")}
 
 @app.post("/analyze/market", dependencies=[Depends(verify_rapidapi_key)])
 async def analyze_market(request: MarketRequest):
-    indicators_key = ",".join(sorted(request.indicators)) if request.indicators else "all"
-    cache_key = f"{request.provider}_{request.symbol}_{request.timeframe}_{request.exchange}_{indicators_key}"
-    cached_res = cache.get(cache_key)
-    if cached_res: return cached_res
-    try:
-        df = await fetch_market_data(request.provider, request.symbol, request.timeframe, request.exchange)
-        if df.empty: raise HTTPException(status_code=404, detail="No data found for symbol.")
-        analysis = get_indicator_status(df, request.indicators, request.include_history)
-        response = {"meta_data": {"symbol": request.symbol, "timeframe": request.timeframe, "provider": request.provider, "timestamp": time.time()}, **analysis}
-        cleaned_response = clean_dict(response)
-        cache.set(cache_key, cleaned_response, expire=60)
-        return cleaned_response
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/scan-patterns", dependencies=[Depends(verify_rapidapi_key)])
-async def scan_patterns(request: MarketRequest):
     df = await fetch_market_data(request.provider, request.symbol, request.timeframe, request.exchange)
-    if df.empty: raise HTTPException(status_code=404, detail="No data found.")
-    op, hi, lo, cl = df['open'].values, df['high'].values, df['low'].values, df['close'].values
-    talib_patterns = [f for f in talib.get_functions() if f.startswith('CDL')]
-    detected = []
-    for i in range(len(df)):
-        for pattern_func_name in talib_patterns:
-            res = getattr(talib, pattern_func_name)(op, hi, lo, cl)
-            if res[i] != 0: detected.append({"index": i, "timestamp": str(df.iloc[i].get('timestamp')), "pattern": pattern_func_name, "sentiment": "Bullish" if res[i] > 0 else "Bearish"})
-    return {"patterns_found": detected}
+    return clean_dict(get_indicator_status(df, request.indicators, request.include_history))
 
-@app.post("/is-trend-bullish", dependencies=[Depends(verify_rapidapi_key)])
-async def is_trend_bullish(request: MarketRequest):
-    df = await fetch_market_data(request.provider, request.symbol, request.timeframe, request.exchange)
-    if df.empty: raise HTTPException(status_code=404, detail="No data found.")
-    cl, hi, lo = df['close'].values, df['high'].values, df['low'].values
-    ema200, adx = talib.EMA(cl, timeperiod=min(len(cl), 200)), talib.ADX(hi, lo, cl, timeperiod=14)
-    is_bullish = cl[-1] > ema200[-1] and adx[-1] > 20
-    return {"is_bullish": bool(is_bullish), "close": float(cl[-1]), "ema200": float(ema200[-1]), "adx": float(adx[-1])}
+@app.post("/analyze/upload", dependencies=[Depends(verify_rapidapi_key)])
+async def analyze_upload(request: UploadRequest):
+    df = pd.DataFrame([c.model_dump() for c in request.data[-2000:]])
+    return clean_dict(get_indicator_status(df, request.indicators, request.include_history))
+
+@app.post("/analyze/mtf", dependencies=[Depends(verify_rapidapi_key)])
+async def analyze_mtf(request: MTFRequest):
+    tfs = {}
+    for tf in request.timeframes:
+        df = await fetch_market_data(request.provider, request.symbol, tf, request.exchange)
+        tfs[tf] = get_indicator_status(df, request.indicators)
+    return clean_dict({"symbol": request.symbol, "timeframes": tfs})
+
+@app.post("/analyze/correlation", dependencies=[Depends(verify_rapidapi_key)])
+async def analyze_correlation(request: CorrelationRequest):
+    series = {}
+    for asset in request.assets:
+        df = await fetch_market_data(request.provider, asset, request.timeframe)
+        series[asset] = df['close']
+    return clean_dict(pd.DataFrame(series).corr().to_dict())
+
+@app.post("/analyze/heatmap", dependencies=[Depends(verify_rapidapi_key)])
+async def analyze_heatmap(request: HeatmapRequest):
+    async def get_m(a):
+        try:
+            df = await fetch_market_data(request.provider, a, "1d")
+            if request.metric == "RSI": v = talib.RSI(df['close'].values)[-1]
+            else: v = ((df['close'].iloc[-1] - df['close'].iloc[-2]) / df['close'].iloc[-2]) * 100
+            return a, float(v)
+        except: return a, None
+    res = await asyncio.gather(*[get_m(a) for a in request.assets])
+    return clean_dict(dict(res))
+
+@app.post("/options/greeks")
+async def options_greeks(req: OptionsRequest):
+    S, K, T = req.underlying_price, req.strike, (datetime.strptime(req.expiry, "%Y-%m-%d") - datetime.now()).days / 365.0
+    if T <= 0: T = 1/365.0
+    r, sigma = req.risk_free_rate, req.volatility
+    d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    if req.option_type == "call":
+        delta, theta = norm.cdf(d1), (-S * norm.pdf(d1) * sigma / (2 * np.sqrt(T)) - r * K * np.exp(-r * T) * norm.cdf(d2)) / 365.0
+    else:
+        delta, theta = norm.cdf(d1) - 1, (-S * norm.pdf(d1) * sigma / (2 * np.sqrt(T)) + r * K * np.exp(-r * T) * norm.cdf(-d2)) / 365.0
+    return clean_dict({"delta": delta, "gamma": norm.pdf(d1) / (S * sigma * np.sqrt(T)), "theta": theta, "vega": S * norm.pdf(d1) * np.sqrt(T) / 100.0})
 
 @app.post("/confluence-score", dependencies=[Depends(verify_rapidapi_key)])
 async def get_confluence_score(request: MarketRequest):
     df = await fetch_market_data(request.provider, request.symbol, request.timeframe, request.exchange)
-    if df.empty: raise HTTPException(status_code=404, detail="No data found.")
-    analysis = get_indicator_status(df)
-    summary, pa, smc = analysis['summary'], analysis['price_action'], analysis['smc']
+    a = get_indicator_status(df)
+    s, smc = a['summary'], a['smc']
     score = 0
-    if summary['signal'] == "Buy": score += 40
-    elif summary['signal'] == "Sell": score -= 40
-    if summary['trend'] == "Bullish": score += 20
-    else: score -= 20
-    if summary['rsi_status'] == "Oversold": score += 15
-    elif summary['rsi_status'] == "Overbought": score -= 15
-    if any(p in pa for p in ["Double Bottom", "Ascending Triangle"]): score += 15
-    if any(p in pa for p in ["Double Top", "Descending Triangle", "Head and Shoulders"]): score -= 15
-    if smc['market_structure_shift'] == "Bullish MSS": score += 10
-    elif smc['market_structure_shift'] == "Bearish MSS": score -= 10
+    if s['signal'] == "Buy": score += 40
+    elif s['signal'] == "Sell": score -= 40
+    score += 20 if s['trend'] == "Bullish" else -20
+    if smc['mss'] == "Bullish MSS": score += 20
+    elif smc['mss'] == "Bearish MSS": score -= 20
     score = max(-100, min(100, score))
-    sentiment = "Neutral"
-    if score > 50: sentiment = "Strong Buy"
-    elif score > 10: sentiment = "Buy"
-    elif score < -50: sentiment = "Strong Sell"
-    elif score < -10: sentiment = "Sell"
-    return {"symbol": request.symbol, "confluence_score": score, "sentiment": sentiment, "components": {"summary": summary['signal'], "trend": summary['trend'], "price_action_found": pa}}
+    return {"symbol": request.symbol, "confluence_score": score, "sentiment": "Strong Buy" if score > 50 else ("Buy" if score > 10 else ("Strong Sell" if score < -50 else ("Sell" if score < -10 else "Neutral")))}
 
 if __name__ == "__main__":
     import uvicorn

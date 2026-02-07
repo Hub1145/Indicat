@@ -20,6 +20,11 @@ A high-performance, enterprise-grade Technical Analysis API built with Python, F
   - **SMC/ICT Strategy**: Built-in detection for Smart Money Concepts like Fair Value Gaps (FVG), Order Blocks (OB), and Market Structure Shifts (MSS).
 - **Sessions & Levels**: Automatic detection of global trading sessions (Tokyo, London, NY) and horizontal Support/Resistance clustering.
 - **Liquidity Tracking**: Identification of Buy Side and Sell Side liquidity zones.
+- **Divergence Engine**: Automated detection of Bullish and Bearish divergences (RSI/MACD).
+- **Multi-Timeframe Analysis (MTF)**: Analyze the same asset across multiple intervals (15m, 1h, 4h, 1d) in a single request.
+- **Portfolio Tools**: Correlation Matrix for multi-asset analysis and Heatmap data generation.
+- **Institutional Volume**: Volume Profile analysis including Point of Control (POC) and Value Area.
+- **Options Analytics**: Black-Scholes Greeks Calculator (Delta, Gamma, Theta, Vega).
 - **Intelligent Logic**:
   - **Summary Signals**: Aggregate "Buy/Sell/Hold" advice based on RSI, BBands, MACD, and Trend crossovers.
   - **Trend Analysis**: Built-in 200 EMA and ADX trend strength evaluation.
@@ -111,6 +116,18 @@ Once the server is running, visit `http://127.0.0.1:8000/docs` for the interacti
 
 #### `GET /indicators`
 Returns a categorized list of every indicator, candlestick pattern, and strategy concept supported by the API, including full descriptive names and shorthand codes.
+
+#### `POST /analyze/mtf`
+Analyzes a single symbol across multiple timeframes simultaneously.
+
+#### `POST /analyze/correlation`
+Calculates Pearson correlation coefficients between a list of assets.
+
+#### `POST /analyze/heatmap`
+Aggregates a specific metric (e.g., RSI, Price Change) for a list of assets for visualization.
+
+#### `POST /options/greeks`
+Calculates Options Greeks (Delta, Gamma, Theta, Vega) based on underlying price, strike, expiry, and volatility.
 
 #### `POST /analyze/market`
 Fetches and analyzes live data from exchanges.
