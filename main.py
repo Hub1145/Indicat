@@ -58,6 +58,164 @@ class MarketRequest(BaseModel):
 
 # --- Helpers ---
 
+INDICATOR_METADATA = {
+    "technical_indicators": {
+        "SMA": "Simple Moving Average",
+        "EMA": "Exponential Moving Average",
+        "WMA": "Weighted Moving Average",
+        "DEMA": "Double Exponential Moving Average",
+        "TEMA": "Triple Exponential Moving Average",
+        "TRIMA": "Triangular Moving Average",
+        "KAMA": "Kaufman Adaptive Moving Average",
+        "MAMA": "MESA Adaptive Moving Average",
+        "T3": "Triple Exponential Moving Average (T3)",
+        "MOM": "Momentum",
+        "ROC": "Rate of Change",
+        "ROCP": "Rate of Change Percentage",
+        "ROCR": "Rate of Change Ratio",
+        "ROCR100": "Rate of Change Ratio 100 Scale",
+        "TRIX": "Triple Exponential TRIX",
+        "STDDEV": "Standard Deviation",
+        "TSF": "Time Series Forecast",
+        "VAR": "Variance",
+        "RSI": "Relative Strength Index",
+        "ADX": "Average Directional Movement Index",
+        "ADXR": "Average Directional Movement Index Rating",
+        "ATR": "Average True Range",
+        "NATR": "Normalized Average True Range",
+        "WILLR": "Williams %R",
+        "CCI": "Commodity Channel Index",
+        "DX": "Directional Movement Index",
+        "MINUS_DI": "Minus Directional Indicator",
+        "MINUS_DM": "Minus Directional Movement",
+        "PLUS_DI": "Plus Directional Indicator",
+        "PLUS_DM": "Plus Directional Movement",
+        "ULTOSC": "Ultimate Oscillator",
+        "MEDPRICE": "Median Price",
+        "TYPPRICE": "Typical Price",
+        "WCLPRICE": "Weighted Close Price",
+        "SAR": "Parabolic SAR",
+        "MFI": "Money Flow Index",
+        "AD": "Chaikin A/D Line",
+        "ADI": "Accumulation/Distribution Index",
+        "ADOSC": "Chaikin A/D Oscillator",
+        "OBV": "On Balance Volume",
+        "MACD": "Moving Average Convergence Divergence",
+        "MACD_SIGNAL": "MACD Signal Line",
+        "MACD_HIST": "MACD Histogram",
+        "BBANDS": "Bollinger Bands",
+        "BOLLINGER_HIGH": "Bollinger Upper Band",
+        "BOLLINGER_LOW": "Bollinger Lower Band",
+        "BOLLINGER_MID": "Bollinger Middle Band",
+        "STOCH": "Stochastic Oscillator",
+        "STOCH_K": "Stochastic %K",
+        "STOCH_D": "Stochastic %D",
+        "AROON": "Aroon Oscillator",
+        "AROON_UP": "Aroon Up",
+        "AROON_DOWN": "Aroon Down",
+        "VWAP": "Volume Weighted Average Price",
+        "VPT": "Volume-Price Trend",
+        "NVI": "Negative Volume Index",
+        "CMF": "Chaikin Money Flow",
+        "FI": "Force Index",
+        "EM": "Ease of Movement",
+        "SMA_FAST": "Fast Simple Moving Average",
+        "SMA_SLOW": "Slow Simple Moving Average",
+        "EMA_FAST": "Fast Exponential Moving Average",
+        "EMA_SLOW": "Slow Exponential Moving Average",
+        "VORTEX_POS": "Vortex Indicator Positive",
+        "VORTEX_NEG": "Vortex Indicator Negative",
+        "MASS_INDEX": "Mass Index",
+        "DPO": "Detrended Price Oscillator",
+        "KST": "Know Sure Thing Oscillator",
+        "ICHIMOKU_A": "Ichimoku Leading Span A",
+        "ICHIMOKU_B": "Ichimoku Leading Span B",
+        "STC": "Schaff Trend Cycle",
+        "UI": "Ulcer Index",
+        "PSAR": "Parabolic SAR (ta implementation)",
+        "EMA20": "Exponential Moving Average 20 Period",
+        "EMA50": "Exponential Moving Average 50 Period",
+        "EMA200": "Exponential Moving Average 200 Period",
+        "SMA20": "Simple Moving Average 20 Period"
+    },
+    "candlestick_patterns": {
+        "CDL2CROWS": "Two Crows",
+        "CDL3BLACKCROWS": "Three Black Crows",
+        "CDL3INSIDE": "Three Inside Up/Down",
+        "CDL3LINESTRIKE": "Three-Line Strike",
+        "CDL3OUTSIDE": "Three Outside Up/Down",
+        "CDL3STARSINSOUTH": "Three Stars In The South",
+        "CDL3WHITESOLDIERS": "Three White Soldiers",
+        "CDLABANDONEDBABY": "Abandoned Baby",
+        "CDLADVANCEBLOCK": "Advance Block",
+        "CDLBELTHOLD": "Belt-hold",
+        "CDLBREAKAWAY": "Breakaway",
+        "CDLCLOSINGMARUBOZU": "Closing Marubozu",
+        "CDLCONCEALBABYSWALL": "Concealed Baby Swallow",
+        "CDLCOUNTERATTACK": "Counterattack",
+        "CDLDARKCLOUDCOVER": "Dark Cloud Cover",
+        "CDLDOJI": "Doji",
+        "CDLDOJISTAR": "Doji Star",
+        "CDLDRAGONFLYDOJI": "Dragonfly Doji",
+        "CDLENGULFING": "Engulfing Pattern",
+        "CDLEVENINGDOJISTAR": "Evening Doji Star",
+        "CDLEVENINGSTAR": "Evening Star",
+        "CDLGAPSIDESIDEWHITE": "Up/Down-gap Side-by-side White Lines",
+        "CDLGRAVESTONEDOJI": "Gravestone Doji",
+        "CDLHAMMER": "Hammer",
+        "CDLHANGINGMAN": "Hanging Man",
+        "CDLHARAMI": "Harami Pattern",
+        "CDLHARAMICROSS": "Harami Cross Pattern",
+        "CDLHIGHWAVE": "High-Wave Candle",
+        "CDLHIKKAKE": "Hikkake Pattern",
+        "CDLHIKKAKEMOD": "Modified Hikkake Pattern",
+        "CDLHOMINGPIGEON": "Homing Pigeon",
+        "CDLIDENTICAL3CROWS": "Identical Three Crows",
+        "CDLINNECK": "In-Neck Pattern",
+        "CDLINVERTEDHAMMER": "Inverted Hammer",
+        "CDLKICKING": "Kicking",
+        "CDLKICKINGBYLENGTH": "Kicking - bull/bear determined by the longer marubozu",
+        "CDLLADDERBOTTOM": "Ladder Bottom",
+        "CDLLONGLEGGEDDOJI": "Long Legged Doji",
+        "CDLLONGLINE": "Long Line Candle",
+        "CDLMARUBOZU": "Marubozu",
+        "CDLMATCHINGLOW": "Matching Low",
+        "CDLMATHOLD": "Mat Hold",
+        "CDLMORNINGDOJISTAR": "Morning Doji Star",
+        "CDLMORNINGSTAR": "Morning Star",
+        "CDLONNECK": "On-Neck Pattern",
+        "CDLPIERCING": "Piercing Pattern",
+        "CDLRICKSHAWMAN": "Rickshaw Man",
+        "CDLRISEFALL3METHODS": "Rising/Falling Three Methods",
+        "CDLSEPARATINGLINES": "Separating Lines",
+        "CDLSHOOTINGSTAR": "Shooting Star",
+        "CDLSHORTLINE": "Short Line Candle",
+        "CDLSPINNINGTOP": "Spinning Top",
+        "CDLSTALLEDPATTERN": "Stalled Pattern",
+        "CDLSTICKSANDWICH": "Stick Sandwich",
+        "CDLTAKURI": "Takuri (Dragonfly Doji with very long lower shadow)",
+        "CDLTASUKIGAP": "Tasuki Gap",
+        "CDLTHRUSTING": "Thrusting Pattern",
+        "CDLTRISTAR": "Tristar Pattern",
+        "CDLUNIQUE3RIVER": "Unique 3 River",
+        "CDLUPSIDEGAP2CROWS": "Upside Gap Two Crows",
+        "CDLXSIDEGAP3METHODS": "Upside/Downside Gap Three Methods"
+    },
+    "price_action": {
+        "Head and Shoulders": "Head and Shoulders Reversal",
+        "Double Top": "Double Top Reversal",
+        "Double Bottom": "Double Bottom Reversal",
+        "Symmetrical Triangle": "Symmetrical Triangle Consolidation",
+        "Descending Triangle": "Descending Triangle Bearish",
+        "Ascending Triangle": "Ascending Triangle Bullish"
+    },
+    "smc_ict": {
+        "Fair Value Gap (FVG)": "Fair Value Gap (Imbalance)",
+        "Order Block (OB)": "Institutional Order Block",
+        "Market Structure Shift (MSS)": "Market Structure Shift / Break of Structure"
+    }
+}
+
 def clean_dict(d):
     """Recursively replaces NaN with None for JSON compatibility."""
     if isinstance(d, dict):
@@ -511,29 +669,20 @@ async def fetch_market_data(provider: str, symbol: str, timeframe: str, exchange
 
 @app.get("/indicators")
 async def get_available_indicators():
-    """Returns a categorized list of all available indicators and patterns."""
-    talib_patterns = sorted([f for f in talib.get_functions() if f.startswith('CDL')])
+    """Returns a categorized list of all available indicators and patterns with full descriptive names."""
 
-    # Core categories with clean names
-    core_indicators = sorted(['SMA', 'EMA', 'WMA', 'DEMA', 'TEMA', 'TRIMA', 'KAMA', 'MAMA', 'T3', 'MOM', 'ROC', 'ROCP', 'ROCR', 'ROCR100', 'TRIX', 'STDDEV', 'TSF', 'VAR', 'RSI', 'ADX', 'ADXR', 'ATR', 'NATR', 'WILLR', 'CCI', 'DX', 'MINUS_DI', 'MINUS_DM', 'PLUS_DI', 'PLUS_DM', 'ULTOSC', 'MEDPRICE', 'TYPPRICE', 'WCLPRICE', 'SAR', 'MFI', 'AD', 'ADOSC', 'OBV', 'MACD', 'BBANDS', 'STOCH', 'AROON'])
-
-    # 'ta' library categories (using clean names)
-    ta_indicators = [
-        "ADI", "OBV", "CMF", "FI", "EM", "VPT", "VWAP", "MFI", "NVI",
-        "BOLLINGER_MID", "BOLLINGER_HIGH", "BOLLINGER_LOW", "ATR", "UI",
-        "MACD", "MACD_SIGNAL", "MACD_HIST", "SMA_FAST", "SMA_SLOW", "EMA_FAST", "EMA_SLOW",
-        "VORTEX_POS", "VORTEX_NEG", "TRIX", "MASS_INDEX", "DPO", "KST", "ICHIMOKU_A", "ICHIMOKU_B", "STC", "ADX", "CCI", "AROON_UP", "AROON_DOWN", "PSAR",
-        "EMA20", "EMA50", "EMA200", "SMA20"
-    ]
+    def format_list(category_key):
+        items = INDICATOR_METADATA.get(category_key, {})
+        return [
+            {"code": code, "full_name": full_name}
+            for code, full_name in items.items()
+        ]
 
     return {
-        "technical_indicators": sorted(list(set(core_indicators + ta_indicators))),
-        "candlestick_patterns": talib_patterns,
-        "price_action": [
-            "Head and Shoulders", "Double Top", "Double Bottom",
-            "Symmetrical Triangle", "Descending Triangle", "Ascending Triangle"
-        ],
-        "smc_ict": ["Fair Value Gap (FVG)", "Order Block (OB)", "Market Structure Shift (MSS)"]
+        "technical_indicators": format_list("technical_indicators"),
+        "candlestick_patterns": format_list("candlestick_patterns"),
+        "price_action": format_list("price_action"),
+        "smc_ict": format_list("smc_ict")
     }
 
 @app.post("/analyze/upload", dependencies=[Depends(verify_rapidapi_key)])

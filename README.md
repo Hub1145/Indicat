@@ -103,7 +103,7 @@ Once the server is running, visit `http://127.0.0.1:8000/docs` for the interacti
 ### Core Endpoints
 
 #### `GET /indicators`
-Returns a categorized list of every indicator, candlestick pattern, and strategy concept supported by the API.
+Returns a categorized list of every indicator, candlestick pattern, and strategy concept supported by the API, including full descriptive names and shorthand codes.
 
 #### `POST /analyze/market`
 Fetches and analyzes live data from exchanges.
