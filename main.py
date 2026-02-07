@@ -6,7 +6,7 @@ import yfinance as yf
 import ta
 from scipy.signal import argrelextrema
 from fastapi import FastAPI, HTTPException, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
 import diskcache
 import time
@@ -44,8 +44,9 @@ class Candle(BaseModel):
     volume: float
 
 class UploadRequest(BaseModel):
-    data: List[Candle]
+    data: List[Candle] = Field(..., max_length=2000, description="List of OHLCV candles (Max 2000)")
     indicators: Optional[List[str]] = None
+    include_history: bool = False
 
 class MarketRequest(BaseModel):
     provider: Literal["crypto", "stock", "forex"]
@@ -53,6 +54,7 @@ class MarketRequest(BaseModel):
     timeframe: Literal["15m", "4h", "1d"]
     exchange: Optional[str] = "binance"
     indicators: Optional[List[str]] = None
+    include_history: bool = False
 
 # --- Helpers ---
 
@@ -168,7 +170,44 @@ def detect_smc_concepts(df: pd.DataFrame):
         "market_structure_shift": mss
     }
 
-def get_indicator_status(df: pd.DataFrame, selected_indicators: Optional[List[str]] = None):
+def clean_column_name(name: str) -> str:
+    """Converts internal library names to clean, user-friendly names."""
+    orig_name = name
+    # Remove common prefixes
+    for prefix in ["talib_", "trend_", "momentum_", "volatility_", "volume_", "others_"]:
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+            break
+
+    # Specific mappings for common indicators
+    mapping = {
+        "bbh": "Bollinger_High",
+        "bbl": "Bollinger_Low",
+        "bbm": "Bollinger_Mid",
+        "macd_signal": "MACD_Signal",
+        "macd_diff": "MACD_Hist",
+        "stoch_rsi": "Stoch_RSI",
+        "ema_fast": "EMA_Fast",
+        "ema_slow": "EMA_Slow",
+        "sma_fast": "SMA_Fast",
+        "sma_slow": "SMA_Slow",
+        "ema_20": "EMA20",
+        "ema_50": "EMA50",
+        "ema_200": "EMA200",
+        "sma_20": "SMA20",
+    }
+
+    # Check if name is already like EMA_20 (clean prefix was 'talib_')
+    if name.lower() in mapping:
+        return mapping[name.lower()]
+
+    # If it's something like CDLDOJI, just keep it or clean slightly
+    if name.startswith("CDL"):
+        return name
+
+    return name.upper()
+
+def get_indicator_status(df: pd.DataFrame, selected_indicators: Optional[List[str]] = None, include_history: bool = False):
     """Calculates indicators and filters them based on user selection."""
     # List of 'ta' library columns to exclude if they have 'talib' equivalents
     DUPLICATE_TA_FEATURES = [
@@ -205,11 +244,12 @@ def get_indicator_status(df: pd.DataFrame, selected_indicators: Optional[List[st
     talib_patterns = [f for f in talib.get_functions() if f.startswith('CDL')]
     found_patterns = []
 
+    talib_results = {}
     for pattern_func_name in talib_patterns:
         func = getattr(talib, pattern_func_name)
         # All CDL functions take (open, high, low, close)
         result = func(op, hi, lo, cl)
-        ta_df[pattern_func_name] = result
+        talib_results[pattern_func_name] = result
         if result[-1] != 0:
             found_patterns.append({
                 "pattern": pattern_func_name,
@@ -220,7 +260,6 @@ def get_indicator_status(df: pd.DataFrame, selected_indicators: Optional[List[st
     # Initialize variables to avoid UnboundLocalError
     upper, mid, lower = [np.array([])]*3
     macd, signal, hist = [np.array([])]*3
-    talib_indicators = {}
 
     # - Indicators taking 'close'
     for func_name in ['SMA', 'EMA', 'WMA', 'DEMA', 'TEMA', 'TRIMA', 'KAMA', 'MAMA', 'T3', 'MOM', 'ROC', 'ROCP', 'ROCR', 'ROCR100', 'TRIX', 'STDDEV', 'TSF', 'VAR', 'RSI']:
@@ -228,9 +267,9 @@ def get_indicator_status(df: pd.DataFrame, selected_indicators: Optional[List[st
             res = getattr(talib, func_name)(cl)
             if isinstance(res, tuple):
                 for i, r in enumerate(res):
-                    ta_df[f"talib_{func_name}_{i}"] = r
+                    talib_results[f"talib_{func_name}_{i}"] = r
             else:
-                ta_df[f"talib_{func_name}"] = res
+                talib_results[f"talib_{func_name}"] = res
         except: pass
 
     # - Indicators taking 'high, low, close'
@@ -239,9 +278,9 @@ def get_indicator_status(df: pd.DataFrame, selected_indicators: Optional[List[st
             res = getattr(talib, func_name)(hi, lo, cl)
             if isinstance(res, tuple):
                 for i, r in enumerate(res):
-                    ta_df[f"talib_{func_name}_{i}"] = r
+                    talib_results[f"talib_{func_name}_{i}"] = r
             else:
-                ta_df[f"talib_{func_name}"] = res
+                talib_results[f"talib_{func_name}"] = res
         except: pass
 
     # - Indicators taking 'high, low, close, volume'
@@ -250,122 +289,173 @@ def get_indicator_status(df: pd.DataFrame, selected_indicators: Optional[List[st
             res = getattr(talib, func_name)(hi, lo, cl, vo)
             if isinstance(res, tuple):
                 for i, r in enumerate(res):
-                    ta_df[f"talib_{func_name}_{i}"] = r
+                    talib_results[f"talib_{func_name}_{i}"] = r
             else:
-                ta_df[f"talib_{func_name}"] = res
+                talib_results[f"talib_{func_name}"] = res
         except: pass
 
     # - Special cases (Multi-output with names)
     try:
         macd, signal, hist = talib.MACD(cl)
-        ta_df['talib_MACD'], ta_df['talib_MACD_signal'], ta_df['talib_MACD_hist'] = macd, signal, hist
+        talib_results.update({'talib_MACD': macd, 'talib_MACD_signal': signal, 'talib_MACD_hist': hist})
     except: pass
 
     try:
         upper, mid, lower = talib.BBANDS(cl)
-        ta_df['talib_BB_upper'], ta_df['talib_BB_mid'], ta_df['talib_BB_lower'] = upper, mid, lower
+        talib_results.update({'talib_BB_upper': upper, 'talib_BB_mid': mid, 'talib_BB_lower': lower})
     except: pass
 
     try:
         slowk, slowd = talib.STOCH(hi, lo, cl)
-        ta_df['talib_STOCH_k'], ta_df['talib_STOCH_d'] = slowk, slowd
+        talib_results.update({'talib_STOCH_k': slowk, 'talib_STOCH_d': slowd})
     except: pass
 
     try:
         aroondown, aroonup = talib.AROON(hi, lo)
-        ta_df['talib_AROON_down'], ta_df['talib_AROON_up'] = aroondown, aroonup
+        talib_results.update({'talib_AROON_down': aroondown, 'talib_AROON_up': aroonup})
     except: pass
 
-    # 5. Summary and Status Logic
-    current_rsi = ta_df['talib_RSI'].iloc[-1] if 'talib_RSI' in ta_df else 50
-    ema200 = talib.EMA(cl, timeperiod=min(len(cl), 200))
-    current_close = cl[-1]
+    # Join all talib results to ta_df at once
+    # Ensure no exact duplicate column names before joining
+    talib_df = pd.DataFrame(talib_results, index=ta_df.index)
+    ta_df = pd.concat([ta_df, talib_df[[c for c in talib_df.columns if c not in ta_df.columns]]], axis=1)
 
-    # Status Logic
+    # 5. Summary and Status Logic (Vectorized for history)
+    rsi_history = ta_df['talib_RSI'] if 'talib_RSI' in ta_df else pd.Series([50]*len(df))
+    ema200_history = talib.EMA(cl, timeperiod=min(len(cl), 200))
+
+    scores = pd.Series(0.0, index=df.index)
+
+    # RSI signals
+    scores[rsi_history < 30] += 1
+    scores[rsi_history > 70] -= 1
+
+    # BBands signals
+    if not upper.size == 0:
+        scores[cl >= upper] -= 1
+        scores[cl <= lower] += 1
+
+    # MACD signals
+    if macd is not None and signal is not None and len(macd) > 1:
+        macd_s = pd.Series(macd, index=df.index)
+        signal_s = pd.Series(signal, index=df.index)
+        # Bullish crossover
+        bullish_cross = (macd_s > signal_s) & (macd_s.shift(1) <= signal_s.shift(1))
+        scores[bullish_cross] += 1
+        # Bearish crossover
+        bearish_cross = (macd_s < signal_s) & (macd_s.shift(1) >= signal_s.shift(1))
+        scores[bearish_cross] -= 1
+
+    # Trend signals
+    scores[cl > ema200_history] += 0.5
+    scores[cl <= ema200_history] -= 0.5
+
+    # Map scores to signals
+    def score_to_signal(s):
+        if s >= 1.5: return "Buy"
+        elif s <= -1.5: return "Sell"
+        return "Hold"
+
+    df['signal'] = scores.apply(score_to_signal)
+
+    # 6. Final Clean Data Prep
+    # Map all internal names to clean names, ensuring uniqueness
+    new_cols = []
+    seen = set()
+    for c in ta_df.columns:
+        clean = clean_column_name(c)
+        if clean in seen:
+            # Append library prefix if collision
+            if c.startswith("talib_"): clean = f"TALIB_{clean}"
+            elif "_" in c: clean = f"{c.split('_', 1)[0].upper()}_{clean}"
+
+            # Final fallback if still seen
+            temp_clean = clean
+            i = 1
+            while temp_clean in seen:
+                temp_clean = f"{clean}_{i}"
+                i += 1
+            clean = temp_clean
+
+        seen.add(clean)
+        new_cols.append(clean)
+
+    ta_df.columns = new_cols
+
+    # Price Action & SMC (already calculated for latest, but we need summary status for latest)
+    price_action = detect_price_action(df)
+    smc = detect_smc_concepts(df)
+
+    latest_idx = -1
+    current_rsi = rsi_history.iloc[latest_idx]
     rsi_status = "Neutral"
     if current_rsi > 70: rsi_status = "Overbought"
     elif current_rsi < 30: rsi_status = "Oversold"
 
     bb_status = "Inside Bands"
-    if current_close >= upper[-1]: bb_status = "Touching Upper Band"
-    elif current_close <= lower[-1]: bb_status = "Touching Lower Band"
+    if not upper.size == 0:
+        if cl[latest_idx] >= upper[latest_idx]: bb_status = "Touching Upper Band"
+        elif cl[latest_idx] <= lower[latest_idx]: bb_status = "Touching Lower Band"
 
     macd_status = "Neutral"
-    if len(macd) > 1:
-        if macd[-1] > signal[-1] and macd[-2] <= signal[-2]:
+    if not macd.size == 0:
+        if macd[latest_idx] > signal[latest_idx] and macd[latest_idx-1] <= signal[latest_idx-1]:
             macd_status = "Bullish Crossover"
-        elif macd[-1] < signal[-1] and macd[-2] >= signal[-2]:
+        elif macd[latest_idx] < signal[latest_idx] and macd[latest_idx-1] >= signal[latest_idx-1]:
             macd_status = "Bearish Crossover"
 
-    trend = "Bullish" if current_close > ema200[-1] else "Bearish"
+    trend = "Bullish" if cl[latest_idx] > ema200_history[latest_idx] else "Bearish"
 
-    # Summary Signal Logic
-    score = 0
-    if rsi_status == "Oversold": score += 1
-    if rsi_status == "Overbought": score -= 1
-    if bb_status == "Touching Lower Band": score += 1
-    if bb_status == "Touching Upper Band": score -= 1
-    if macd_status == "Bullish Crossover": score += 1
-    if macd_status == "Bearish Crossover": score -= 1
-    if trend == "Bullish": score += 0.5
-    else: score -= 0.5
+    # 7. Construct Response
+    if include_history:
+        # Merge signals and clean indicators back to original df
+        output_df = df.copy()
+        for col in ta_df.columns:
+            if col not in output_df.columns:
+                output_df[col] = ta_df[col]
 
-    signal_str = "Hold"
-    if score >= 1.5: signal_str = "Buy"
-    elif score <= -1.5: signal_str = "Sell"
+        # Filtering for history
+        if selected_indicators:
+            selected_clean = [clean_column_name(i) for i in selected_indicators]
+            # Keep core OHLCV + signal + selected
+            keep = ['timestamp', 'open', 'high', 'low', 'close', 'volume', 'signal'] + [c for c in output_df.columns if c in selected_clean]
+            output_df = output_df[keep]
 
-    # Price Action
-    price_action = detect_price_action(df)
-
-    # SMC/ICT Concepts
-    smc = detect_smc_concepts(df)
-
-    # Categorize indicators for a cleaner response
-    latest = ta_df.iloc[-1].to_dict()
-
-    # Filtering logic
-    if selected_indicators:
-        # Normalize selected indicators to lowercase for easier matching
-        selected_lower = [i.lower() for i in selected_indicators]
-        filtered_latest = {k: v for k, v in latest.items() if k.lower() in selected_lower}
-
-        # If the user selected specific indicators, we just return those in a flat list
-        # plus the summary and price action (which are always included)
         return {
-            "current_price": float(current_close),
             "summary": {
-                "signal": signal_str,
+                "signal": df['signal'].iloc[-1],
                 "trend": trend,
-                "rsi_status": rsi_status,
-                "bb_status": bb_status,
-                "macd_status": macd_status
+                "rsi_status": rsi_status
             },
-            "selected_indicators": filtered_latest,
-            "patterns_detected": [p for p in found_patterns if p['pattern'].lower() in selected_lower] if found_patterns else [],
-            "price_action": price_action,
-            "smc": smc
+            "history": output_df.to_dict(orient="records")
         }
 
+    # Latest only response (Categorized)
+    latest_indicators = ta_df.iloc[-1].to_dict()
+    if selected_indicators:
+        selected_clean = [clean_column_name(i) for i in selected_indicators]
+        latest_indicators = {k: v for k, v in latest_indicators.items() if k in selected_clean}
+
     categorized = {
-        "trend": {k: v for k, v in latest.items() if "trend" in k.lower() or "ema" in k.lower() or "sma" in k.lower()},
-        "momentum": {k: v for k, v in latest.items() if "momentum" in k.lower() or "rsi" in k.lower() or "macd" in k.lower() or "stoch" in k.lower()},
-        "volatility": {k: v for k, v in latest.items() if "volatility" in k.lower() or "bb" in k.lower() or "atr" in k.lower()},
-        "volume": {k: v for k, v in latest.items() if "volume" in k.lower() or "obv" in k.lower() or "ad" in k.lower()},
-        "candlestick_patterns": {k: v for k, v in latest.items() if k.startswith("CDL")},
-        "others": {k: v for k, v in latest.items() if not any(x in k.lower() for x in ["trend", "momentum", "volatility", "volume", "rsi", "macd", "stoch", "bb", "atr", "obv", "ad", "ema", "sma"]) and not k.startswith("CDL")}
+        "trend": {k: v for k, v in latest_indicators.items() if any(x in k.lower() for x in ["trend", "ema", "sma", "ichimoku", "psar", "adx", "aroon"])},
+        "momentum": {k: v for k, v in latest_indicators.items() if any(x in k.lower() for x in ["momentum", "rsi", "macd", "stoch", "tsi", "uo", "roc", "ppo", "pvo", "kama"])},
+        "volatility": {k: v for k, v in latest_indicators.items() if any(x in k.lower() for x in ["volatility", "bollinger", "atr", "ui", "kc", "dc"])},
+        "volume": {k: v for k, v in latest_indicators.items() if any(x in k.lower() for x in ["volume", "obv", "adi", "mfi", "cmf", "fi", "em", "vpt", "vwap", "nvi", "ad"])},
+        "candlestick_patterns": {k: v for k, v in latest_indicators.items() if k.startswith("CDL")},
+        "others": {k: v for k, v in latest_indicators.items() if not any(x in k.lower() for x in ["trend", "momentum", "volatility", "volume", "rsi", "macd", "stoch", "bollinger", "atr", "obv", "ad", "ema", "sma", "psar", "ichimoku", "adx", "aroon", "tsi", "uo", "roc", "ppo", "pvo", "kama", "ui", "kc", "dc", "adi", "mfi", "cmf", "fi", "em", "vpt", "vwap", "nvi"]) and not k.startswith("CDL")}
     }
 
     return {
-        "current_price": float(current_close),
+        "current_price": float(cl[-1]),
         "summary": {
-            "signal": signal_str,
+            "signal": df['signal'].iloc[-1],
             "trend": trend,
             "rsi_status": rsi_status,
             "bb_status": bb_status,
             "macd_status": macd_status
         },
-        "indicators": categorized,
-        "patterns_detected": found_patterns,
+        "indicators": categorized if not selected_indicators else latest_indicators,
+        "patterns_detected": [p for p in found_patterns if p['pattern'].lower() in [i.lower() for i in (selected_indicators or [])]] if selected_indicators else found_patterns,
         "price_action": price_action,
         "smc": smc
     }
@@ -424,21 +514,21 @@ async def get_available_indicators():
     """Returns a categorized list of all available indicators and patterns."""
     talib_patterns = sorted([f for f in talib.get_functions() if f.startswith('CDL')])
 
-    # Core talib categories (simplified list)
-    talib_indicators = sorted(['SMA', 'EMA', 'WMA', 'DEMA', 'TEMA', 'TRIMA', 'KAMA', 'MAMA', 'T3', 'MOM', 'ROC', 'ROCP', 'ROCR', 'ROCR100', 'TRIX', 'STDDEV', 'TSF', 'VAR', 'RSI', 'ADX', 'ADXR', 'ATR', 'NATR', 'WILLR', 'CCI', 'DX', 'MINUS_DI', 'MINUS_DM', 'PLUS_DI', 'PLUS_DM', 'ULTOSC', 'MEDPRICE', 'TYPPRICE', 'WCLPRICE', 'SAR', 'MFI', 'AD', 'ADOSC', 'OBV', 'MACD', 'BBANDS', 'STOCH', 'AROON'])
+    # Core categories with clean names
+    core_indicators = sorted(['SMA', 'EMA', 'WMA', 'DEMA', 'TEMA', 'TRIMA', 'KAMA', 'MAMA', 'T3', 'MOM', 'ROC', 'ROCP', 'ROCR', 'ROCR100', 'TRIX', 'STDDEV', 'TSF', 'VAR', 'RSI', 'ADX', 'ADXR', 'ATR', 'NATR', 'WILLR', 'CCI', 'DX', 'MINUS_DI', 'MINUS_DM', 'PLUS_DI', 'PLUS_DM', 'ULTOSC', 'MEDPRICE', 'TYPPRICE', 'WCLPRICE', 'SAR', 'MFI', 'AD', 'ADOSC', 'OBV', 'MACD', 'BBANDS', 'STOCH', 'AROON'])
 
-    # 'ta' library categories (approximate groups from add_all_ta_features)
+    # 'ta' library categories (using clean names)
     ta_indicators = [
-        "volume_adi", "volume_obv", "volume_cmf", "volume_fi", "volume_em", "volume_sma_em", "volume_vpt", "volume_vwap", "volume_mfi", "volume_nvi",
-        "volatility_bbm", "volatility_bbh", "volatility_bbl", "volatility_bbw", "volatility_bbp", "volatility_bbhi", "volatility_bbli", "volatility_kcc", "volatility_kch", "volatility_kcl", "volatility_kcw", "volatility_kcp", "volatility_kchi", "volatility_kcli", "volatility_dcl", "volatility_dch", "volatility_dcm", "volatility_dcw", "volatility_dcp", "volatility_atr", "volatility_ui",
-        "trend_macd", "trend_macd_signal", "trend_macd_diff", "trend_sma_fast", "trend_sma_slow", "trend_ema_fast", "trend_ema_slow", "trend_vortex_ind_pos", "trend_vortex_ind_neg", "trend_vortex_ind_diff", "trend_trix", "trend_mass_index", "trend_dpo", "trend_kst", "trend_kst_sig", "trend_kst_diff", "trend_ichimoku_conv", "trend_ichimoku_base", "trend_ichimoku_a", "trend_ichimoku_b", "trend_stc", "trend_adx", "trend_adx_pos", "trend_adx_neg", "trend_cci", "trend_visual_ichimoku_a", "trend_visual_ichimoku_b", "trend_aroon_up", "trend_aroon_down", "trend_aroon_ind", "trend_psar_up", "trend_psar_down", "trend_psar_up_indicator", "trend_psar_down_indicator",
-        "momentum_rsi", "momentum_stoch_rsi", "momentum_stoch_rsi_k", "momentum_stoch_rsi_d", "momentum_tsi", "momentum_uo", "momentum_stoch", "momentum_stoch_signal", "momentum_wr", "momentum_ao", "momentum_roc", "momentum_ppo", "momentum_ppo_signal", "momentum_ppo_hist", "momentum_pvo", "momentum_pvo_signal", "momentum_pvo_hist", "momentum_kama"
+        "ADI", "OBV", "CMF", "FI", "EM", "VPT", "VWAP", "MFI", "NVI",
+        "BOLLINGER_MID", "BOLLINGER_HIGH", "BOLLINGER_LOW", "ATR", "UI",
+        "MACD", "MACD_SIGNAL", "MACD_HIST", "SMA_FAST", "SMA_SLOW", "EMA_FAST", "EMA_SLOW",
+        "VORTEX_POS", "VORTEX_NEG", "TRIX", "MASS_INDEX", "DPO", "KST", "ICHIMOKU_A", "ICHIMOKU_B", "STC", "ADX", "CCI", "AROON_UP", "AROON_DOWN", "PSAR",
+        "EMA20", "EMA50", "EMA200", "SMA20"
     ]
 
     return {
-        "talib_indicators": [f"talib_{i}" for i in talib_indicators],
+        "technical_indicators": sorted(list(set(core_indicators + ta_indicators))),
         "candlestick_patterns": talib_patterns,
-        "ta_library_indicators": ta_indicators,
         "price_action": [
             "Head and Shoulders", "Double Top", "Double Bottom",
             "Symmetrical Triangle", "Descending Triangle", "Ascending Triangle"
@@ -451,9 +541,11 @@ async def analyze_upload(request: UploadRequest):
     if len(request.data) < 30:
         raise HTTPException(status_code=400, detail="Need at least 30 candles.")
 
-    df = pd.DataFrame([c.model_dump() for c in request.data])
+    # Trim to last 2000 candles if more provided (SaaS safeguard)
+    data = request.data[-2000:]
+    df = pd.DataFrame([c.model_dump() for c in data])
 
-    analysis = get_indicator_status(df, request.indicators)
+    analysis = get_indicator_status(df, request.indicators, request.include_history)
     return clean_dict(analysis)
 
 @app.post("/analyze/market", dependencies=[Depends(verify_rapidapi_key)])
@@ -471,7 +563,7 @@ async def analyze_market(request: MarketRequest):
         if df.empty:
             raise HTTPException(status_code=404, detail="No data found for symbol.")
 
-        analysis = get_indicator_status(df, request.indicators)
+        analysis = get_indicator_status(df, request.indicators, request.include_history)
 
         response = {
             "meta_data": {

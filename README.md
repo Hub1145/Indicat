@@ -12,6 +12,8 @@ A high-performance, enterprise-grade Technical Analysis API built with Python, F
   - **200+ Indicators**: Full integration of TA-Lib and the 'ta' (Bukosabino) library.
   - **Deduplication**: Intelligently prefers high-performance C-based TA-Lib functions over overlaps.
   - **Selection & Filtering**: Request specific indicators to optimize bandwidth and speed.
+- **Historical Analysis**: Toggle full historical data marking (Buy/Sell signals on every candle) for backtesting and charting.
+- **Clean API**: All indicator names are normalized (e.g., `RSI`, `EMA200`) and library-agnostic.
 - **Advanced Pattern Recognition**:
   - **Candlestick Patterns**: Over 60 TA-Lib patterns (Hammer, Doji, Engulfing, etc.) with human-readable sentiment mapping.
   - **Price Action Detection**: Native detection of complex chart patterns using high-precision pivot point analysis.
@@ -108,11 +110,14 @@ Fetches and analyzes live data from exchanges.
 - **Provider**: `crypto`, `stock`, `forex`
 - **Timeframes**: `15m`, `4h`, `1d`
 - **Exchange**: `binance` (default), `kraken`, etc.
-- **Indicators**: (Optional) List of specific indicators to return.
+- **Indicators**: (Optional) List of specific indicators to return (e.g., `["RSI", "EMA200"]`).
+- **include_history**: (Optional bool) If `true`, returns signals for the entire 200-candle dataset.
 
 #### `POST /analyze/upload`
 Analyzes a provided list of OHLCV data.
-- **Data**: List of candles (open, high, low, close, volume).
+- **Data**: List of candles (Max 2000 per request).
+- **indicators**: (Optional) List of specific indicators to return.
+- **include_history**: (Optional bool) If `true`, returns analysis for the full history instead of just the latest candle.
 
 #### `POST /scan-patterns`
 Performs a full scan of the dataset to identify every occurrence of specific candlestick patterns.
