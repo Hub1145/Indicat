@@ -152,6 +152,9 @@ def get_indicator_status(df: pd.DataFrame, selected_indicators: Optional[List[st
             })
 
     # 4. Add key 'talib' indicators (comprehensive list)
+    # Initialize variables to avoid UnboundLocalError
+    upper, mid, lower = [np.array([])]*3
+    macd, signal, hist = [np.array([])]*3
     talib_indicators = {}
 
     # - Indicators taking 'close'
@@ -391,6 +394,58 @@ async def analyze_market(request: MarketRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/scan-patterns")
+async def scan_patterns(request: MarketRequest):
+    """Scans for patterns across all candles."""
+    df = await fetch_market_data(request.provider, request.symbol, request.timeframe, request.exchange)
+    if df.empty:
+        raise HTTPException(status_code=404, detail="No data found.")
+
+    op = df['open'].values
+    hi = df['high'].values
+    lo = df['low'].values
+    cl = df['close'].values
+
+    talib_patterns = [f for f in talib.get_functions() if f.startswith('CDL')]
+    detected = []
+
+    for i in range(len(df)):
+        for pattern_func_name in talib_patterns:
+            func = getattr(talib, pattern_func_name)
+            res = func(op, hi, lo, cl)
+            if res[i] != 0:
+                detected.append({
+                    "index": i,
+                    "timestamp": str(df.iloc[i].get('timestamp')),
+                    "pattern": pattern_func_name,
+                    "sentiment": "Bullish" if res[i] > 0 else "Bearish"
+                })
+
+    return {"patterns_found": detected}
+
+@app.post("/is-trend-bullish")
+async def is_trend_bullish(request: MarketRequest):
+    """Simplified trend check."""
+    df = await fetch_market_data(request.provider, request.symbol, request.timeframe, request.exchange)
+    if df.empty:
+        raise HTTPException(status_code=404, detail="No data found.")
+
+    cl = df['close'].values
+    hi = df['high'].values
+    lo = df['low'].values
+
+    ema200 = talib.EMA(cl, timeperiod=min(len(cl), 200))
+    adx = talib.ADX(hi, lo, cl, timeperiod=14)
+
+    is_bullish = cl[-1] > ema200[-1] and adx[-1] > 20
+
+    return {
+        "is_bullish": bool(is_bullish),
+        "close": float(cl[-1]),
+        "ema200": float(ema200[-1]),
+        "adx": float(adx[-1])
+    }
 
 if __name__ == "__main__":
     import uvicorn

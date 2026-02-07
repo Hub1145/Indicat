@@ -16,8 +16,8 @@ def test_upload():
     resp = requests.post("http://127.0.0.1:8000/analyze/upload", json={"data": data})
     res = resp.json()
     print(res)
-    if "price_action_patterns" in res:
-        print("Success: found price_action_patterns field")
+    if "price_action" in res:
+        print("Success: found price_action field")
 
 def test_market():
     print("\nTesting /analyze/market (Crypto)...")
@@ -51,6 +51,28 @@ def test_filtering():
     if "selected_indicators" in res and "talib_RSI" in res["selected_indicators"]:
         print("Success: only selected indicators returned")
 
+def test_scan_patterns():
+    print("\nTesting /scan-patterns...")
+    payload = {
+        "provider": "crypto",
+        "symbol": "BTC/USD",
+        "timeframe": "1d",
+        "exchange": "kraken"
+    }
+    resp = requests.post("http://127.0.0.1:8000/scan-patterns", json=payload)
+    print(f"Patterns found: {len(resp.json().get('patterns_found', []))}")
+
+def test_is_trend_bullish():
+    print("\nTesting /is-trend-bullish...")
+    payload = {
+        "provider": "crypto",
+        "symbol": "BTC/USD",
+        "timeframe": "1d",
+        "exchange": "kraken"
+    }
+    resp = requests.post("http://127.0.0.1:8000/is-trend-bullish", json=payload)
+    print(resp.json())
+
 def test_stock():
     print("\nTesting /analyze/market (Stock)...")
     payload = {
@@ -67,6 +89,8 @@ if __name__ == "__main__":
         test_upload()
         test_market()
         test_filtering()
+        test_scan_patterns()
+        test_is_trend_bullish()
         test_stock()
     except Exception as e:
         print(f"Error: {e}")
