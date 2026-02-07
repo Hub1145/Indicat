@@ -118,6 +118,56 @@ def detect_price_action(df: pd.DataFrame):
 
     return patterns
 
+def detect_smc_concepts(df: pd.DataFrame):
+    """Detects SMC/ICT concepts: Fair Value Gaps, Order Blocks, and Market Structure Shifts."""
+    high = df['high'].values
+    low = df['low'].values
+    close = df['close'].values
+
+    fvgs = []
+    order_blocks = []
+    mss = "None"
+
+    # 1. Fair Value Gaps (FVG) - Look at last 10 candles for relevant gaps
+    # Bullish FVG: low[i] > high[i-2]
+    # Bearish FVG: high[i] < low[i-2]
+    for i in range(len(df)-1, len(df)-11, -1):
+        if i < 2: break
+        # Bullish FVG
+        if low[i] > high[i-2]:
+            fvgs.append({"type": "Bullish FVG", "top": low[i], "bottom": high[i-2], "index": i-1})
+        # Bearish FVG
+        elif high[i] < low[i-2]:
+            fvgs.append({"type": "Bearish FVG", "top": low[i-2], "bottom": high[i], "index": i-1})
+
+    # 2. Order Blocks (OB) - Simplified: Last opposite candle before a significant move
+    # Looking for a "displacement" move (ATR based)
+    atr = talib.ATR(high, low, close, timeperiod=14)
+    for i in range(len(df)-2, len(df)-12, -1):
+        if i < 1: break
+        move = close[i+1] - close[i]
+        if abs(move) > 2 * atr[i]: # Strong displacement
+            if move > 0: # Bullish displacement
+                order_blocks.append({"type": "Bullish OB", "price": close[i], "index": i})
+            else: # Bearish displacement
+                order_blocks.append({"type": "Bearish OB", "price": close[i], "index": i})
+
+    # 3. Market Structure Shift (MSS)
+    # Check if last candle closed above recent peak or below recent valley
+    peak_idx = argrelextrema(high, np.greater, order=5)[0]
+    valley_idx = argrelextrema(low, np.less, order=5)[0]
+
+    if len(peak_idx) > 0 and close[-1] > high[peak_idx[-1]]:
+        mss = "Bullish MSS"
+    elif len(valley_idx) > 0 and close[-1] < low[valley_idx[-1]]:
+        mss = "Bearish MSS"
+
+    return {
+        "fair_value_gaps": fvgs[:3], # Return top 3 recent
+        "order_blocks": order_blocks[:3],
+        "market_structure_shift": mss
+    }
+
 def get_indicator_status(df: pd.DataFrame, selected_indicators: Optional[List[str]] = None):
     """Calculates indicators and filters them based on user selection."""
     # List of 'ta' library columns to exclude if they have 'talib' equivalents
@@ -267,6 +317,9 @@ def get_indicator_status(df: pd.DataFrame, selected_indicators: Optional[List[st
     # Price Action
     price_action = detect_price_action(df)
 
+    # SMC/ICT Concepts
+    smc = detect_smc_concepts(df)
+
     # Categorize indicators for a cleaner response
     latest = ta_df.iloc[-1].to_dict()
 
@@ -289,7 +342,8 @@ def get_indicator_status(df: pd.DataFrame, selected_indicators: Optional[List[st
             },
             "selected_indicators": filtered_latest,
             "patterns_detected": [p for p in found_patterns if p['pattern'].lower() in selected_lower] if found_patterns else [],
-            "price_action": price_action
+            "price_action": price_action,
+            "smc": smc
         }
 
     categorized = {
@@ -312,7 +366,8 @@ def get_indicator_status(df: pd.DataFrame, selected_indicators: Optional[List[st
         },
         "indicators": categorized,
         "patterns_detected": found_patterns,
-        "price_action": price_action
+        "price_action": price_action,
+        "smc": smc
     }
 
 async def fetch_market_data(provider: str, symbol: str, timeframe: str, exchange_id: str = "binance"):
@@ -363,6 +418,33 @@ async def fetch_market_data(provider: str, symbol: str, timeframe: str, exchange
     return df
 
 # --- Endpoints ---
+
+@app.get("/indicators")
+async def get_available_indicators():
+    """Returns a categorized list of all available indicators and patterns."""
+    talib_patterns = sorted([f for f in talib.get_functions() if f.startswith('CDL')])
+
+    # Core talib categories (simplified list)
+    talib_indicators = sorted(['SMA', 'EMA', 'WMA', 'DEMA', 'TEMA', 'TRIMA', 'KAMA', 'MAMA', 'T3', 'MOM', 'ROC', 'ROCP', 'ROCR', 'ROCR100', 'TRIX', 'STDDEV', 'TSF', 'VAR', 'RSI', 'ADX', 'ADXR', 'ATR', 'NATR', 'WILLR', 'CCI', 'DX', 'MINUS_DI', 'MINUS_DM', 'PLUS_DI', 'PLUS_DM', 'ULTOSC', 'MEDPRICE', 'TYPPRICE', 'WCLPRICE', 'SAR', 'MFI', 'AD', 'ADOSC', 'OBV', 'MACD', 'BBANDS', 'STOCH', 'AROON'])
+
+    # 'ta' library categories (approximate groups from add_all_ta_features)
+    ta_indicators = [
+        "volume_adi", "volume_obv", "volume_cmf", "volume_fi", "volume_em", "volume_sma_em", "volume_vpt", "volume_vwap", "volume_mfi", "volume_nvi",
+        "volatility_bbm", "volatility_bbh", "volatility_bbl", "volatility_bbw", "volatility_bbp", "volatility_bbhi", "volatility_bbli", "volatility_kcc", "volatility_kch", "volatility_kcl", "volatility_kcw", "volatility_kcp", "volatility_kchi", "volatility_kcli", "volatility_dcl", "volatility_dch", "volatility_dcm", "volatility_dcw", "volatility_dcp", "volatility_atr", "volatility_ui",
+        "trend_macd", "trend_macd_signal", "trend_macd_diff", "trend_sma_fast", "trend_sma_slow", "trend_ema_fast", "trend_ema_slow", "trend_vortex_ind_pos", "trend_vortex_ind_neg", "trend_vortex_ind_diff", "trend_trix", "trend_mass_index", "trend_dpo", "trend_kst", "trend_kst_sig", "trend_kst_diff", "trend_ichimoku_conv", "trend_ichimoku_base", "trend_ichimoku_a", "trend_ichimoku_b", "trend_stc", "trend_adx", "trend_adx_pos", "trend_adx_neg", "trend_cci", "trend_visual_ichimoku_a", "trend_visual_ichimoku_b", "trend_aroon_up", "trend_aroon_down", "trend_aroon_ind", "trend_psar_up", "trend_psar_down", "trend_psar_up_indicator", "trend_psar_down_indicator",
+        "momentum_rsi", "momentum_stoch_rsi", "momentum_stoch_rsi_k", "momentum_stoch_rsi_d", "momentum_tsi", "momentum_uo", "momentum_stoch", "momentum_stoch_signal", "momentum_wr", "momentum_ao", "momentum_roc", "momentum_ppo", "momentum_ppo_signal", "momentum_ppo_hist", "momentum_pvo", "momentum_pvo_signal", "momentum_pvo_hist", "momentum_kama"
+    ]
+
+    return {
+        "talib_indicators": [f"talib_{i}" for i in talib_indicators],
+        "candlestick_patterns": talib_patterns,
+        "ta_library_indicators": ta_indicators,
+        "price_action": [
+            "Head and Shoulders", "Double Top", "Double Bottom",
+            "Symmetrical Triangle", "Descending Triangle", "Ascending Triangle"
+        ],
+        "smc_ict": ["Fair Value Gap (FVG)", "Order Block (OB)", "Market Structure Shift (MSS)"]
+    }
 
 @app.post("/analyze/upload", dependencies=[Depends(verify_rapidapi_key)])
 async def analyze_upload(request: UploadRequest):
@@ -475,6 +557,7 @@ async def get_confluence_score(request: MarketRequest):
     analysis = get_indicator_status(df)
     summary = analysis['summary']
     pa = analysis['price_action']
+    smc = analysis['smc']
 
     score = 0
 
@@ -490,9 +573,13 @@ async def get_confluence_score(request: MarketRequest):
     if summary['rsi_status'] == "Oversold": score += 15
     elif summary['rsi_status'] == "Overbought": score -= 15
 
-    # 4. Price Action Bonus (25 points)
-    if any(p in pa for p in ["Double Bottom", "Ascending Triangle"]): score += 25
-    if any(p in pa for p in ["Double Top", "Descending Triangle", "Head and Shoulders"]): score -= 25
+    # 4. Price Action Bonus (15 points)
+    if any(p in pa for p in ["Double Bottom", "Ascending Triangle"]): score += 15
+    if any(p in pa for p in ["Double Top", "Descending Triangle", "Head and Shoulders"]): score -= 15
+
+    # 5. SMC/ICT Bias (10 points)
+    if smc['market_structure_shift'] == "Bullish MSS": score += 10
+    elif smc['market_structure_shift'] == "Bearish MSS": score -= 10
 
     # Ensure range -100 to +100
     score = max(-100, min(100, score))
