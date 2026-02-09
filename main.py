@@ -117,6 +117,12 @@ INDICATOR_METADATA = {
     "custom_lux_algo": {
         "ZScore_Zones": "Z-Score Predictive Zones [AlgoPoint]",
         "Lux_MSB_OB": "Market Structure Break & OB Toolkit [LuxAlgo]"
+    },
+    "squeeze_momentum": {
+        "Squeeze_LB": "Squeeze Momentum Indicator [LazyBear]"
+    },
+    "trend_following": {
+        "Supertrend": "Supertrend Indicator"
     }
 }
 
@@ -421,6 +427,84 @@ def detect_lux_msb_ob(df, pivot_len=7, msb_thresh=0.5):
         "order_blocks": obs[:5]
     }
 
+def detect_squeeze_momentum(df, bb_len=20, bb_mult=2.0, kc_len=20, kc_mult=1.5):
+    """Implementation of Squeeze Momentum Indicator [LazyBear]."""
+    c, h, l = df['close'], df['high'], df['low']
+
+    # Bollinger Bands (using multKC=1.5 as per provided script)
+    basis = talib.SMA(c, timeperiod=bb_len)
+    dev = kc_mult * talib.STDDEV(c, timeperiod=bb_len)
+    upperBB, lowerBB = basis + dev, basis - dev
+
+    # Keltner Channels
+    ma = talib.SMA(c, timeperiod=kc_len)
+    tr = talib.TRANGE(h, l, c)
+    range_ma = talib.SMA(tr, timeperiod=kc_len)
+    upperKC, lowerKC = ma + range_ma * kc_mult, ma - range_ma * kc_mult
+
+    # Squeeze State
+    sqz_on = (lowerBB > lowerKC) & (upperBB < upperKC)
+    sqz_off = (lowerBB < lowerKC) & (upperBB > upperKC)
+
+    # Momentum Value
+    highest_h = h.rolling(window=kc_len).max()
+    lowest_l = l.rolling(window=kc_len).min()
+    avg_val = ((highest_h + lowest_l)/2 + ma) / 2
+
+    momentum_val = talib.LINEARREG((c - avg_val).fillna(0), timeperiod=kc_len)
+
+    curr_val, prev_val = momentum_val.iloc[-1], momentum_val.iloc[-2]
+    state = "Squeeze On" if sqz_on.iloc[-1] else ("Squeeze Off" if sqz_off.iloc[-1] else "No Squeeze")
+
+    return {
+        "value": float(curr_val),
+        "state": state,
+        "direction": "Up" if curr_val > prev_val else "Down",
+        "bias": "Bullish" if curr_val > 0 else "Bearish",
+        "is_squeeze_firing": bool(sqz_off.iloc[-1] and not sqz_off.iloc[-2])
+    }
+
+def detect_supertrend(df, period=10, multiplier=3.0):
+    """Implementation of Supertrend Indicator."""
+    h, l, c = df['high'], df['low'], df['close']
+    hl2 = (h + l) / 2
+    atr = talib.ATR(h, l, c, timeperiod=period)
+
+    up = hl2 - (multiplier * atr)
+    dn = hl2 + (multiplier * atr)
+
+    # Trailing stops
+    upper = np.zeros(len(df))
+    lower = np.zeros(len(df))
+    trend = np.ones(len(df))
+
+    for i in range(1, len(df)):
+        if np.isnan(up[i]) or np.isnan(dn[i]):
+            continue
+
+        if c.iloc[i-1] > lower[i-1]:
+            lower[i] = max(up.iloc[i], lower[i-1])
+        else:
+            lower[i] = up.iloc[i]
+
+        if c.iloc[i-1] < upper[i-1]:
+            upper[i] = min(dn.iloc[i], upper[i-1])
+        else:
+            upper[i] = dn.iloc[i]
+
+        if c.iloc[i] > upper[i]:
+            trend[i] = 1
+        elif c.iloc[i] < lower[i]:
+            trend[i] = -1
+        else:
+            trend[i] = trend[i-1]
+
+    return {
+        "value": float(lower[-1] if trend[-1] == 1 else upper[-1]),
+        "direction": "Bullish" if trend[-1] == 1 else "Bearish",
+        "signal": "Buy" if trend[-1] == 1 and trend[-2] == -1 else ("Sell" if trend[-1] == -1 and trend[-2] == 1 else "None")
+    }
+
 def get_indicator_results_sync(df, selected=None, history=False):
     op, hi, lo, cl, vo = df['open'].values, df['high'].values, df['low'].values, df['close'].values, df['volume'].values
     ta_df = df.copy()
@@ -495,6 +579,10 @@ def get_indicator_results_sync(df, selected=None, history=False):
         "custom_lux_algo": {
             "zscore_zones": detect_lux_zscore(df),
             "market_structure": detect_lux_msb_ob(df)
+        },
+        "squeeze_momentum": detect_squeeze_momentum(df),
+        "trend_following": {
+            "supertrend": detect_supertrend(df)
         }
     }
 
@@ -551,7 +639,9 @@ async def list_indicators():
         "institutional_strategies": fmt(INDICATOR_METADATA["institutional_strategies"]),
         "price_action_patterns": fmt(INDICATOR_METADATA["price_action_patterns"]),
         "market_dynamics": fmt(INDICATOR_METADATA["market_dynamics"]),
-        "custom_lux_algo": fmt(INDICATOR_METADATA["custom_lux_algo"])
+        "custom_lux_algo": fmt(INDICATOR_METADATA["custom_lux_algo"]),
+        "squeeze_momentum": fmt(INDICATOR_METADATA["squeeze_momentum"]),
+        "trend_following": fmt(INDICATOR_METADATA["trend_following"])
     }
 
 @app.post("/analyze/market", dependencies=[Depends(verify_rapidapi_key)])

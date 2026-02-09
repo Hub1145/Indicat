@@ -34,6 +34,8 @@ def test_endpoints():
     # Check for Price Action Patterns
     data = r.json()
     print(f"Price Action Patterns Found: {[p['pattern'] for p in data.get('price_action_patterns', [])]}")
+    print(f"Squeeze Momentum State: {data.get('squeeze_momentum', {}).get('state')}")
+    print(f"Supertrend Direction: {data.get('trend_following', {}).get('supertrend', {}).get('direction')}")
 
     # 4. Confluence Score
     print("\nTesting /confluence-score...")
