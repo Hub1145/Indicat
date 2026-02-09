@@ -17,8 +17,8 @@ def test_endpoints():
     print(f"Status: {r.status_code}, History size: {len(r.json().get('history', []))}")
 
     # 3. Analyze Market (Crypto)
-    print("\nTesting /analyze/market (Kraken)...")
-    payload = {"provider": "crypto", "symbol": "BTC/USD", "timeframe": "1d", "exchange": "kraken"}
+    print("\nTesting /analyze/market (Binance)...")
+    payload = {"provider": "crypto", "symbol": "BTC/USDT", "timeframe": "1d", "exchange": "binance"}
 
     start = time.time()
     r = requests.post(f"{BASE_URL}/analyze/market", json=payload)

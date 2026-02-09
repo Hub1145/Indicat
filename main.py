@@ -2,6 +2,8 @@ import pandas as pd
 import numpy as np
 import talib
 import ccxt
+from binance.um_futures import UMFutures
+from binance.error import ClientError
 import yfinance as yf
 import ta
 import asyncio
@@ -32,6 +34,9 @@ async def verify_rapidapi_key(x_rapidapi_proxy_secret: str = Header(None)):
 # --- Caching ---
 cache = diskcache.Cache("./cache")
 
+# --- Binance Client ---
+binance_client = UMFutures()
+
 # --- Models ---
 
 class Candle(BaseModel):
@@ -51,7 +56,7 @@ class MarketRequest(BaseModel):
     provider: Literal["crypto", "stock", "forex"]
     symbol: str
     timeframe: Literal["15m", "1h", "4h", "1d"]
-    exchange: Optional[str] = "kraken"
+    exchange: Optional[str] = "binance"
     indicators: Optional[List[str]] = None
     include_history: bool = False
 
@@ -59,7 +64,7 @@ class MTFRequest(BaseModel):
     provider: Literal["crypto", "stock", "forex"]
     symbol: str
     timeframes: List[Literal["15m", "1h", "4h", "1d"]]
-    exchange: Optional[str] = "kraken"
+    exchange: Optional[str] = "binance"
     indicators: Optional[List[str]] = None
 
 class CorrelationRequest(BaseModel):
@@ -88,7 +93,10 @@ INDICATOR_METADATA = {
         "RSI": "Relative Strength Index", "ADX": "Average Directional Index", "ATR": "Average True Range",
         "MACD": "Moving Average Convergence Divergence", "BBANDS": "Bollinger Bands",
         "VWAP": "Volume Weighted Average Price", "OBV": "On Balance Volume", "CMF": "Chaikin Money Flow",
-        "EMA20": "20-Period EMA", "EMA50": "50-Period EMA", "EMA200": "200-Period EMA", "SMA20": "20-Period SMA"
+        "EMA20": "20-Period EMA", "EMA50": "50-Period EMA", "EMA200": "200-Period EMA", "SMA20": "20-Period SMA",
+        "SQUEEZE_MOMENTUM": "Squeeze Momentum [LazyBear]",
+        "SUPERTREND": "Supertrend",
+        "IMBA_TREND": "[IMBA] Trend Line"
     },
     "candlestick_patterns": {f: f.replace("CDL", "").replace("_", " ").title() for f in talib.get_functions() if f.startswith('CDL')},
     "institutional_strategies": {
@@ -124,7 +132,8 @@ INDICATOR_METADATA = {
         "Squeeze_LB": "Squeeze Momentum Indicator [LazyBear]"
     },
     "trend_following": {
-        "Supertrend": "Supertrend Indicator"
+        "Supertrend": "Supertrend Indicator",
+        "IMBA_Trend": "[IMBA] ALGO Trend Line + Signals"
     }
 }
 
@@ -432,38 +441,27 @@ def detect_lux_msb_ob(df, pivot_len=7, msb_thresh=0.5):
 def detect_squeeze_momentum(df, bb_len=20, bb_mult=2.0, kc_len=20, kc_mult=1.5):
     """Implementation of Squeeze Momentum Indicator [LazyBear]."""
     c, h, l = df['close'], df['high'], df['low']
-
-    # Bollinger Bands (using multKC=1.5 as per provided script)
     basis = talib.SMA(c, timeperiod=bb_len)
     dev = kc_mult * talib.STDDEV(c, timeperiod=bb_len)
     upperBB, lowerBB = basis + dev, basis - dev
-
-    # Keltner Channels
     ma = talib.SMA(c, timeperiod=kc_len)
     tr = talib.TRANGE(h, l, c)
     range_ma = talib.SMA(tr, timeperiod=kc_len)
     upperKC, lowerKC = ma + range_ma * kc_mult, ma - range_ma * kc_mult
-
-    # Squeeze State
     sqz_on = (lowerBB > lowerKC) & (upperBB < upperKC)
     sqz_off = (lowerBB < lowerKC) & (upperBB > upperKC)
-
-    # Momentum Value
     highest_h = h.rolling(window=kc_len).max()
     lowest_l = l.rolling(window=kc_len).min()
     avg_val = ((highest_h + lowest_l)/2 + ma) / 2
-
     momentum_val = talib.LINEARREG((c - avg_val).fillna(0), timeperiod=kc_len)
-
     curr_val, prev_val = momentum_val.iloc[-1], momentum_val.iloc[-2]
-    state = "Squeeze On" if sqz_on.iloc[-1] else ("Squeeze Off" if sqz_off.iloc[-1] else "No Squeeze")
-
     return {
         "value": float(curr_val),
-        "state": state,
+        "state": "Squeeze On" if sqz_on.iloc[-1] else ("Squeeze Off" if sqz_off.iloc[-1] else "No Squeeze"),
         "direction": "Up" if curr_val > prev_val else "Down",
         "bias": "Bullish" if curr_val > 0 else "Bearish",
-        "is_squeeze_firing": bool(sqz_off.iloc[-1] and not sqz_off.iloc[-2])
+        "is_squeeze_firing": bool(sqz_off.iloc[-1] and not sqz_off.iloc[-2]),
+        "series": momentum_val
     }
 
 def detect_supertrend(df, period=10, multiplier=3.0):
@@ -471,40 +469,39 @@ def detect_supertrend(df, period=10, multiplier=3.0):
     h, l, c = df['high'], df['low'], df['close']
     hl2 = (h + l) / 2
     atr = talib.ATR(h, l, c, timeperiod=period)
-
     up = hl2 - (multiplier * atr)
     dn = hl2 + (multiplier * atr)
-
-    # Trailing stops
-    upper = np.zeros(len(df))
-    lower = np.zeros(len(df))
-    trend = np.ones(len(df))
-
+    upper, lower, trend = np.zeros(len(df)), np.zeros(len(df)), np.ones(len(df))
     for i in range(1, len(df)):
-        if np.isnan(up[i]) or np.isnan(dn[i]):
-            continue
-
-        if c.iloc[i-1] > lower[i-1]:
-            lower[i] = max(up.iloc[i], lower[i-1])
-        else:
-            lower[i] = up.iloc[i]
-
-        if c.iloc[i-1] < upper[i-1]:
-            upper[i] = min(dn.iloc[i], upper[i-1])
-        else:
-            upper[i] = dn.iloc[i]
-
-        if c.iloc[i] > upper[i]:
-            trend[i] = 1
-        elif c.iloc[i] < lower[i]:
-            trend[i] = -1
-        else:
-            trend[i] = trend[i-1]
-
+        if np.isnan(up[i]) or np.isnan(dn[i]): continue
+        lower[i] = max(up[i], lower[i-1]) if c.iloc[i-1] > lower[i-1] else up[i]
+        upper[i] = min(dn[i], upper[i-1]) if c.iloc[i-1] < upper[i-1] else dn[i]
+        if c.iloc[i] > upper[i]: trend[i] = 1
+        elif c.iloc[i] < lower[i]: trend[i] = -1
+        else: trend[i] = trend[i-1]
+    st_val = pd.Series(np.where(trend == 1, lower, upper), index=df.index)
     return {
-        "value": float(lower[-1] if trend[-1] == 1 else upper[-1]),
+        "value": float(st_val.iloc[-1]),
         "direction": "Bullish" if trend[-1] == 1 else "Bearish",
-        "signal": "Buy" if trend[-1] == 1 and trend[-2] == -1 else ("Sell" if trend[-1] == -1 and trend[-2] == 1 else "None")
+        "signal": "Buy" if trend[-1] == 1 and trend[-2] == -1 else ("Sell" if trend[-1] == -1 and trend[-2] == 1 else "None"),
+        "series": st_val
+    }
+
+def detect_imba_trend(df, sensitivity=18.0):
+    """Implementation of [IMBA] ALGO Trend Line + Signals."""
+    h, l, c = df['high'], df['low'], df['close']
+    length = int(max(1, sensitivity * 10))
+    high_line = h.rolling(window=length).max()
+    low_line = l.rolling(window=length).min()
+    imba_trend_line = high_line - (high_line - low_line) * 0.5
+    is_uptrend = c > imba_trend_line
+    buy_signal = is_uptrend & (~is_uptrend.shift(1).fillna(False))
+    sell_signal = (~is_uptrend) & is_uptrend.shift(1).fillna(False)
+    return {
+        "value": float(imba_trend_line.iloc[-1]),
+        "direction": "Bullish" if is_uptrend.iloc[-1] else "Bearish",
+        "signal": "Buy" if buy_signal.iloc[-1] else ("Sell" if sell_signal.iloc[-1] else "None"),
+        "series": imba_trend_line
     }
 
 def get_indicator_results_sync(df, selected=None, history=False):
@@ -551,6 +548,15 @@ def get_indicator_results_sync(df, selected=None, history=False):
     for c in ta_df.columns:
         all_raw_cols[clean_name(c)] = ta_df[c]
 
+    # Add custom indicators to all_raw for history/charting
+    st_res = detect_supertrend(df)
+    imba_res = detect_imba_trend(df)
+    sqz_res = detect_squeeze_momentum(df)
+
+    all_raw_cols["SUPERTREND"] = st_res["series"]
+    all_raw_cols["IMBA_TREND"] = imba_res["series"]
+    all_raw_cols["SQUEEZE_MOMENTUM"] = sqz_res["series"]
+
     all_raw = pd.DataFrame(all_raw_cols, index=df.index)
 
     rsi = all_raw.get('RSI', pd.Series([50]*len(df), index=df.index))
@@ -582,9 +588,10 @@ def get_indicator_results_sync(df, selected=None, history=False):
             "zscore_zones": detect_lux_zscore(df),
             "market_structure": detect_lux_msb_ob(df)
         },
-        "squeeze_momentum": detect_squeeze_momentum(df),
+        "squeeze_momentum": {k:v for k,v in sqz_res.items() if k != "series"},
         "trend_following": {
-            "supertrend": detect_supertrend(df)
+            "supertrend": {k:v for k,v in st_res.items() if k != "series"},
+            "imba_trend": {k:v for k,v in imba_res.items() if k != "series"}
         }
     }
 
@@ -604,7 +611,31 @@ def get_indicator_results_sync(df, selected=None, history=False):
 async def get_indicator_results(df, selected=None, history=False):
     return await asyncio.to_thread(get_indicator_results_sync, df, selected, history)
 
-async def fetch_data(provider, symbol, tf, ex_id="kraken"):
+async def fetch_data_binance(symbol, timeframe, limit=500):
+    """Fetches OHLCV from Binance UMFutures."""
+    try:
+        # Normalize symbol
+        s = symbol.upper().replace("/", "")
+        if s.endswith("USD"): s = s.replace("USD", "USDT")
+        if not (s.endswith("USDT") or s.endswith("BUSD")): s += "USDT"
+
+        print(f"Fetching {s} {timeframe} from Binance...")
+        resp = await asyncio.to_thread(binance_client.klines, s, timeframe, limit=limit)
+        if not resp:
+            raise HTTPException(status_code=404, detail=f"No data found for {s}")
+
+        df = pd.DataFrame(resp).iloc[:, :6]
+        df.columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+        df = df.astype(float)
+        return df
+    except ClientError as error:
+        print(f"Binance ClientError: {error.error_message}")
+        raise HTTPException(status_code=500, detail=f"Binance Error: {error.error_message}")
+    except Exception as e:
+        print(f"Binance Fetch Exception: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Data Fetch Error: {str(e)}")
+
+async def fetch_data(provider, symbol, tf, ex_id="binance"):
     # We fetch a buffer to ensure indicators (like EMA200) are accurate for the last 200 candles
     fetch_limit = 500
     cache_key = f"data_{provider}_{symbol}_{tf}_{ex_id}_{fetch_limit}"
@@ -612,12 +643,18 @@ async def fetch_data(provider, symbol, tf, ex_id="kraken"):
     if cached is not None: return pd.read_json(io.StringIO(cached))
 
     if provider == "crypto":
-        ex = getattr(ccxt, ex_id if ex_id else "kraken")()
-        ohlcv = await asyncio.to_thread(ex.fetch_ohlcv, symbol, timeframe=tf, limit=fetch_limit)
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        try:
+            df = await fetch_data_binance(symbol, tf, limit=fetch_limit)
+        except Exception as e:
+            print(f"Binance failed ({str(e)}). Falling back to Kraken via CCXT...")
+            ex = ccxt.kraken()
+            # Normalize for CCXT if needed
+            s = symbol if "/" in symbol else f"{symbol}/USDT"
+            ohlcv = await asyncio.to_thread(ex.fetch_ohlcv, s, timeframe=tf, limit=fetch_limit)
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     else:
         mapping = {"15m": "15m", "1h": "1h", "4h": "1h", "1d": "1d"}
-        # For stocks/forex, period='1y' usually gives enough data, but we tail specifically
+        # For stocks/forex, period='2y' usually gives enough data
         data = await asyncio.to_thread(yf.download, symbol if provider == "stock" else f"{symbol}=X", period="2y", interval=mapping[tf], progress=False)
         if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
         if tf == "4h": data = data.resample('4h').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last', 'Volume':'sum'}).dropna()
@@ -758,7 +795,7 @@ async def get_chart(
 ):
     # Default indicators for chart if none specified
     if not indicators:
-        indicators = ["EMA20", "EMA50", "EMA200", "RSI", "MACD", "SUPERTREND"]
+        indicators = ["EMA20", "EMA50", "EMA200", "RSI", "MACD", "SUPERTREND", "IMBA_TREND", "SQUEEZE_MOMENTUM"]
     df = await fetch_data(provider, symbol, timeframe, exchange)
     # Calculate indicators on full data
     analysis = await get_indicator_results(df, indicators, history=True)
@@ -767,10 +804,20 @@ async def get_chart(
     chart_data = analysis["history"][-200:]
 
     # Prepare Lightweight Charts JSON
-    # Candles: [{time: unix, open, high, low, close}]
-    # Note: Lightweight charts expects time in seconds or "YYYY-MM-DD"
     candles = []
     indicator_series = {}
+    markers = []
+
+    # Extract patterns and institutional logic from the latest analysis
+    smc = analysis.get("institutional_strategies", {})
+    price_patterns = analysis.get("price_action_patterns", [])
+    lux = analysis.get("custom_lux_algo", {})
+    dynamics = analysis.get("market_dynamics", {})
+
+    # Heuristic for mapping indicators to panes
+    price_avg = np.mean([r["close"] for r in chart_data])
+
+    # JS Logic moved to template to keep it simple and avoid duplication
 
     for row in chart_data:
         # Normalize timestamp
@@ -793,17 +840,21 @@ async def get_chart(
             if k not in indicator_series: indicator_series[k] = []
             indicator_series[k].append({"time": t, "value": float(v)})
 
-    # Heuristic for mapping indicators to panes
-    # Overlays (Line): Value close to price
-    # Oscillators (Separate): Value far from price
-    price_avg = np.mean([c["close"] for c in candles])
+    # Create markers for signals and patterns
+    for p in price_patterns:
+        markers.append({"time": t, "position": "aboveBar", "color": "#f23645", "shape": "arrowDown", "text": p["pattern"]})
+
+    # Add SMC Order Blocks and FVGs as markers/static levels if they are in the range
+    # (In a lightweight chart, we'll mark the source candles for OB/FVG)
+    for ob in smc.get("order_blocks", []):
+        markers.append({"time": t, "position": "belowBar", "color": "#2158f3", "shape": "square", "text": "OB"})
 
     html_content = f"""
     <!DOCTYPE html>
     <html>
     <head>
         <title>{symbol} - TA Visualizer</title>
-        <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+        <script src="https://unpkg.com/lightweight-charts@4.0.0/dist/lightweight-charts.standalone.production.js"></script>
         <style>
             body {{ margin: 0; padding: 20px; background: #131722; color: white; font-family: sans-serif; }}
             .chart-container {{ width: 100%; height: 500px; margin-bottom: 10px; }}
@@ -816,41 +867,41 @@ async def get_chart(
             <h2 style="margin:0;">{symbol} ({timeframe})</h2>
             <p style="color: #878b94; margin: 5px 0;">TA-as-a-Service Visualizer • Multi-Pane Layout</p>
         </div>
-        <div id="main-chart" class="chart-container"></div>
+        <div id="main-chart" style="width: 100%; height: 500px;"></div>
         <div id="oscillators"></div>
 
         <script>
-            const chartOptions = {{
-                width: document.body.clientWidth - 40,
-                layout: {{ backgroundColor: '#131722', textColor: '#d1d4dc' }},
-                grid: {{ vertLines: {{ color: '#1e222d' }}, horzLines: {{ color: '#1e222d' }} }},
-                crosshair: {{ mode: LightweightCharts.CrosshairMode.Normal }},
-                timeScale: {{ borderColor: '#485c7b', timeVisible: true }}
-            }};
+            const candles = {json.dumps(candles)};
+            const indicatorSeriesData = {json.dumps(indicator_series)};
+            const markers = {json.dumps(markers)};
+            const priceAvg = {price_avg};
 
             const mainChart = LightweightCharts.createChart(document.getElementById('main-chart'), {{
-                ...chartOptions,
-                height: 500
+                width: window.innerWidth - 40,
+                height: 500,
+                layout: {{ background: {{ type: 'solid', color: '#131722' }}, textColor: '#d1d4dc' }},
+                grid: {{ vertLines: {{ color: '#1e222d' }}, horzLines: {{ color: '#1e222d' }} }},
+                timeScale: {{ borderColor: '#485c7b', timeVisible: true }}
             }});
 
             const candleSeries = mainChart.addCandlestickSeries({{
                 upColor: '#089981', downColor: '#f23645', borderVisible: false,
                 wickUpColor: '#089981', wickDownColor: '#f23645'
             }});
-            candleSeries.setData({json.dumps(candles)});
 
-            const indicatorSeriesData = {json.dumps(indicator_series)};
-            const priceAvg = {price_avg};
+            candleSeries.setData(candles);
+            candleSeries.setMarkers(markers);
+
             const oscCharts = [];
 
             Object.keys(indicatorSeriesData).forEach(name => {{
                 const data = indicatorSeriesData[name];
+                if (data.length === 0) return;
                 const valAvg = data.reduce((a,b) => a + b.value, 0) / data.length;
                 const color = '#' + (Math.random().toString(16) + '000000').substring(2,8);
 
-                // If avg value is within 50% of price OR it's a known overlay
                 const isOverlay = Math.abs(valAvg - priceAvg) / priceAvg < 0.5 ||
-                                  ["UPPER", "LOWER", "MID", "STOP", "TREND"].some(k => name.includes(k));
+                                  ["UPPER", "LOWER", "MID", "STOP", "TREND", "IMBA", "BANDS"].some(k => name.includes(k));
 
                 if (isOverlay) {{
                     const line = mainChart.addLineSeries({{ title: name, lineWidth: 1, color: color }});
@@ -861,9 +912,11 @@ async def get_chart(
                     document.getElementById('oscillators').appendChild(container);
 
                     const oscChart = LightweightCharts.createChart(container, {{
-                        ...chartOptions,
+                        width: window.innerWidth - 40,
                         height: 150,
-                        timeScale: {{ ...chartOptions.timeScale, visible: false }}
+                        layout: {{ background: {{ type: 'solid', color: '#131722' }}, textColor: '#d1d4dc' }},
+                        grid: {{ vertLines: {{ color: '#1e222d' }}, horzLines: {{ color: '#1e222d' }} }},
+                        timeScale: {{ visible: false }}
                     }});
 
                     const line = oscChart.addLineSeries({{ title: name, lineWidth: 1, color: color }});
@@ -872,25 +925,15 @@ async def get_chart(
                 }}
             }});
 
-            // Sync all charts
-            function syncCharts() {{
-                mainChart.timeScale().subscribeVisibleTimeRangeChange(range => {{
-                    oscCharts.forEach(c => c.timeScale().setVisibleRange(range));
-                }});
-                oscCharts.forEach(osc => {{
-                    osc.timeScale().subscribeVisibleTimeRangeChange(range => {{
-                        mainChart.timeScale().setVisibleRange(range);
-                        oscCharts.forEach(c => {{ if(c !== osc) c.timeScale().setVisibleRange(range) }});
-                    }});
-                }});
-            }}
-            syncCharts();
+            mainChart.timeScale().subscribeVisibleTimeRangeChange(range => {{
+                oscCharts.forEach(c => c.timeScale().setVisibleRange(range));
+            }});
 
             window.addEventListener('resize', () => {{
-                const w = document.body.clientWidth - 40;
+                const w = window.innerWidth - 40;
                 mainChart.applyOptions({{ width: w }});
                 oscCharts.forEach(c => c.applyOptions({{ width: w }}));
-            }});
+            });
         </script>
     </body>
     </html>
