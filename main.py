@@ -7,6 +7,7 @@ import ta
 import asyncio
 import os
 import time
+import io
 from datetime import datetime
 from typing import List, Optional, Literal, Dict, Any
 from scipy.signal import argrelextrema
@@ -108,6 +109,10 @@ INDICATOR_METADATA = {
         "SR_Levels": "Horizontal Support & Resistance Levels",
         "Liquidity": "Buy Side & Sell Side Liquidity Pools",
         "Volume_Profile": "Price Distribution Analysis"
+    },
+    "custom_lux_algo": {
+        "ZScore_Zones": "Z-Score Predictive Zones [AlgoPoint]",
+        "Lux_MSB_OB": "Market Structure Break & OB Toolkit [LuxAlgo]"
     }
 }
 
@@ -192,6 +197,133 @@ def detect_divergences(df: pd.DataFrame, indicator: str = "RSI"):
         if c[p[-1]] > c[p[-2]] and ind[p[-1]] < ind[p[-2]]: divs["bearish"] = True
     return divs
 
+def detect_price_action_patterns(df: pd.DataFrame):
+    h, l, c = df['high'].values, df['low'].values, df['close'].values
+    ph_idx = argrelextrema(h, np.greater, order=5)[0]
+    pl_idx = argrelextrema(l, np.less, order=5)[0]
+
+    patterns = []
+
+    # 1. Head and Shoulders
+    if len(ph_idx) >= 3:
+        p1, p2, p3 = h[ph_idx[-3]], h[ph_idx[-2]], h[ph_idx[-1]]
+        if p2 > p1 and p2 > p3 and abs(p1 - p3) / p1 < 0.05:
+            patterns.append({"pattern": "Head and Shoulders", "confidence": 0.85, "index": int(ph_idx[-1])})
+        elif p2 < p1 and p2 < p3 and abs(p1 - p3) / p1 < 0.05:
+            patterns.append({"pattern": "Inverse Head and Shoulders", "confidence": 0.85, "index": int(ph_idx[-1])})
+
+    # 2. Double Top / Bottom
+    if len(ph_idx) >= 2:
+        p1, p2 = h[ph_idx[-2]], h[ph_idx[-1]]
+        if abs(p1 - p2) / p1 < 0.01:
+            patterns.append({"pattern": "Double Top", "confidence": 0.80, "index": int(ph_idx[-1])})
+    if len(pl_idx) >= 2:
+        v1, v2 = l[pl_idx[-2]], l[pl_idx[-1]]
+        if abs(v1 - v2) / v1 < 0.01:
+            patterns.append({"pattern": "Double Bottom", "confidence": 0.80, "index": int(pl_idx[-1])})
+
+    # 3. Triangles
+    if len(ph_idx) >= 2 and len(pl_idx) >= 2:
+        ph1, ph2 = h[ph_idx[-2]], h[ph_idx[-1]]
+        pl1, pl2 = l[pl_idx[-2]], l[pl_idx[-1]]
+
+        # Ascending: Flat top, rising bottom
+        if abs(ph1 - ph2) / ph1 < 0.01 and pl2 > pl1:
+            patterns.append({"pattern": "Ascending Triangle", "confidence": 0.75, "index": int(ph_idx[-1])})
+        # Descending: Falling top, flat bottom
+        elif ph2 < ph1 and abs(pl1 - pl2) / pl1 < 0.01:
+            patterns.append({"pattern": "Descending Triangle", "confidence": 0.75, "index": int(ph_idx[-1])})
+        # Symmetrical: Falling top, rising bottom
+        elif ph2 < ph1 and pl2 > pl1:
+            patterns.append({"pattern": "Symmetrical Triangle", "confidence": 0.70, "index": int(ph_idx[-1])})
+
+    return patterns
+
+def calculate_volume_profile(df: pd.DataFrame):
+    if df['volume'].sum() == 0: return None
+    bins = 20
+    counts, edges = np.histogram(df['close'], bins=bins, weights=df['volume'])
+    idx = np.argmax(counts)
+    return {"poc": float(edges[idx]), "vah": float(edges[min(idx+2, bins-1)]), "val": float(edges[max(idx-2, 0)])}
+
+def calculate_vwma(series, volume, length):
+    return (series * volume).rolling(length).sum() / volume.rolling(length).sum()
+
+def detect_lux_zscore(df, length=144, smooth=20, history_depth=25, thresh=1.5):
+    """Implementation of Z-Score Predictive Zones."""
+    c = df['close']
+    mean = c.rolling(length).mean()
+    std = c.rolling(length).std()
+    raw_z = (c - mean) / std
+    z_score = calculate_vwma(raw_z, df['volume'], smooth)
+
+    z_vals = z_score.dropna().values
+    if len(z_vals) < 5: return {}
+
+    # Detect pivots on z-score
+    ph_idx = argrelextrema(z_vals, np.greater, order=1)[0]
+    pl_idx = argrelextrema(z_vals, np.less, order=1)[0]
+
+    top_revs = z_vals[ph_idx][z_vals[ph_idx] > thresh][-history_depth:]
+    bot_revs = z_vals[pl_idx][z_vals[pl_idx] < -thresh][-history_depth:]
+
+    avg_top = float(np.mean(top_revs)) if len(top_revs) > 0 else 2.0
+    avg_bot = float(np.mean(bot_revs)) if len(bot_revs) > 0 else -2.0
+
+    current_z = float(z_vals[-1])
+
+    # Price Bands
+    last_mean = float(mean.iloc[-1])
+    last_std = float(std.iloc[-1])
+
+    return {
+        "z_score": current_z,
+        "avg_resistance_z": avg_top,
+        "avg_support_z": avg_bot,
+        "price_bands": {
+            "resistance_high": last_mean + ((avg_top + 0.5) * last_std),
+            "resistance_low": last_mean + (avg_top * last_std),
+            "support_high": last_mean + (avg_bot * last_std),
+            "support_low": last_mean + ((avg_bot - 0.5) * last_std)
+        },
+        "signal": "Sell" if current_z > avg_top else ("Buy" if current_z < avg_bot else "Neutral")
+    }
+
+def detect_lux_msb_ob(df, pivot_len=7, msb_thresh=0.5):
+    """Implementation of Market Structure Break & OB Probability Toolkit."""
+    h, l, c, v = df['high'].values, df['low'].values, df['close'].values, df['volume'].values
+    change = df['close'].diff()
+    momentum_z = (change - change.rolling(50).mean()) / change.rolling(50).std()
+
+    # Pivots
+    ph_idx = argrelextrema(h, np.greater, order=pivot_len)[0]
+    pl_idx = argrelextrema(l, np.less, order=pivot_len)[0]
+
+    if len(ph_idx) == 0 or len(pl_idx) == 0: return {}
+
+    last_ph, last_pl = h[ph_idx[-1]], l[pl_idx[-1]]
+    current_mz = momentum_z.iloc[-1]
+
+    is_msb_bull = c[-1] > last_ph and current_mz > msb_thresh
+    is_msb_bear = c[-1] < last_pl and current_mz < -msb_thresh
+
+    # Simple OB search (last 10 candles)
+    obs = []
+    for i in range(len(df)-2, len(df)-12, -1):
+        if i < 0: break
+        # Potential Bullish OB: down candle before move up
+        if c[i] < df['open'].iloc[i] and c[i+1] > last_ph:
+            obs.append({"type": "Bullish OB", "top": h[i], "bottom": l[i], "mitigated": c[-1] < l[i]})
+        # Potential Bearish OB: up candle before move down
+        if c[i] > df['open'].iloc[i] and c[i+1] < last_pl:
+            obs.append({"type": "Bearish OB", "top": h[i], "bottom": l[i], "mitigated": c[-1] > h[i]})
+
+    return {
+        "msb": "Bullish" if is_msb_bull else ("Bearish" if is_msb_bear else "None"),
+        "last_pivots": {"high": float(last_ph), "low": float(last_pl)},
+        "order_blocks": obs[:5]
+    }
+
 def get_indicator_results_sync(df, selected=None, history=False):
     op, hi, lo, cl, vo = df['open'].values, df['high'].values, df['low'].values, df['close'].values, df['volume'].values
     ta_df = df.copy()
@@ -229,13 +361,14 @@ def get_indicator_results_sync(df, selected=None, history=False):
             else: talib_res[f] = res
         except: pass
 
-    all_raw = pd.DataFrame(index=df.index)
+    # Optimized DataFrame construction to avoid fragmentation
+    all_raw_cols = {}
     for k, v in talib_res.items():
-        clean_k = clean_name(k)
-        if clean_k not in all_raw.columns: all_raw[clean_k] = v
+        all_raw_cols[clean_name(k)] = v
     for c in ta_df.columns:
-        clean_c = clean_name(c)
-        if clean_c not in all_raw.columns: all_raw[clean_c] = ta_df[c]
+        all_raw_cols[clean_name(c)] = ta_df[c]
+
+    all_raw = pd.DataFrame(all_raw_cols, index=df.index)
 
     rsi = all_raw.get('RSI', pd.Series([50]*len(df), index=df.index))
     ema200 = talib.EMA(cl, timeperiod=min(len(cl), 200))
@@ -260,7 +393,12 @@ def get_indicator_results_sync(df, selected=None, history=False):
             "levels": detect_sr_levels(df),
             "volume_profile": calculate_volume_profile(df)
         },
-        "divergences": {"rsi": detect_divergences(df, "RSI"), "macd": detect_divergences(df, "MACD")}
+        "divergences": {"rsi": detect_divergences(df, "RSI"), "macd": detect_divergences(df, "MACD")},
+        "price_action_patterns": detect_price_action_patterns(df),
+        "custom_lux_algo": {
+            "zscore_zones": detect_lux_zscore(df),
+            "market_structure": detect_lux_msb_ob(df)
+        }
     }
 
     latest_data = all_raw.iloc[-1].to_dict()
@@ -280,10 +418,14 @@ async def get_indicator_results(df, selected=None, history=False):
     return await asyncio.to_thread(get_indicator_results_sync, df, selected, history)
 
 async def fetch_data(provider, symbol, tf, ex_id="kraken"):
+    cache_key = f"data_{provider}_{symbol}_{tf}_{ex_id}"
+    cached = cache.get(cache_key)
+    if cached is not None: return pd.read_json(io.StringIO(cached))
+
     if provider == "crypto":
         ex = getattr(ccxt, ex_id if ex_id else "kraken")()
         ohlcv = await asyncio.to_thread(ex.fetch_ohlcv, symbol, timeframe=tf, limit=200)
-        return pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     else:
         mapping = {"15m": "15m", "1h": "1h", "4h": "1h", "1d": "1d"}
         data = await asyncio.to_thread(yf.download, symbol if provider == "stock" else f"{symbol}=X", period="1y", interval=mapping[tf], progress=False)
@@ -291,7 +433,10 @@ async def fetch_data(provider, symbol, tf, ex_id="kraken"):
         if tf == "4h": data = data.resample('4h').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last', 'Volume':'sum'}).dropna()
         df = data.tail(200).reset_index()
         df.columns = [str(c).lower() for c in df.columns]
-        return df.rename(columns={'date': 'timestamp', 'datetime': 'timestamp'})
+        df = df.rename(columns={'date': 'timestamp', 'datetime': 'timestamp'})
+
+    cache.set(cache_key, df.to_json(), expire=60)
+    return df
 
 # --- Endpoints ---
 
@@ -303,15 +448,33 @@ async def list_indicators():
             if f not in cp: cp[f] = f.replace("CDL", "").replace("_", " ").title()
         elif f not in ti: ti[f] = f.replace("_", " ").title()
     def fmt(d): return [{"code": k, "full_name": v} for k, v in sorted(d.items())]
-    return {"technical_indicators": fmt(ti), "candlestick_patterns": fmt(cp), "institutional_strategies": fmt(INDICATOR_METADATA["institutional_strategies"]), "price_action_patterns": fmt(INDICATOR_METADATA["price_action_patterns"]), "market_dynamics": fmt(INDICATOR_METADATA["market_dynamics"])}
+    return {
+        "technical_indicators": fmt(ti),
+        "candlestick_patterns": fmt(cp),
+        "institutional_strategies": fmt(INDICATOR_METADATA["institutional_strategies"]),
+        "price_action_patterns": fmt(INDICATOR_METADATA["price_action_patterns"]),
+        "market_dynamics": fmt(INDICATOR_METADATA["market_dynamics"]),
+        "custom_lux_algo": fmt(INDICATOR_METADATA["custom_lux_algo"])
+    }
 
 @app.post("/analyze/market", dependencies=[Depends(verify_rapidapi_key)])
 async def analyze_market(req: MarketRequest):
+    cache_key = f"analysis_{req.provider}_{req.symbol}_{req.timeframe}_{req.exchange}_{req.indicators}_{req.include_history}"
+    cached = cache.get(cache_key)
+    if cached: return cached
+
     df = await fetch_data(req.provider, req.symbol, req.timeframe, req.exchange)
-    return clean_dict(await get_indicator_results(df, req.indicators, req.include_history))
+    if len(df) < 30:
+        raise HTTPException(status_code=400, detail="Not enough data points fetched. Minimum 30 required.")
+
+    res = clean_dict(await get_indicator_results(df, req.indicators, req.include_history))
+    cache.set(cache_key, res, expire=60)
+    return res
 
 @app.post("/analyze/upload", dependencies=[Depends(verify_rapidapi_key)])
 async def analyze_upload(req: UploadRequest):
+    if len(req.data) < 30:
+        raise HTTPException(status_code=400, detail="Not enough candles. Minimum 30 required.")
     df = pd.DataFrame([c.model_dump() for c in req.data[-2000:]])
     return clean_dict(await get_indicator_results(df, req.indicators, req.include_history))
 

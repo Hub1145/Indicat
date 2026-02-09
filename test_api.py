@@ -19,8 +19,21 @@ def test_endpoints():
     # 3. Analyze Market (Crypto)
     print("\nTesting /analyze/market (Kraken)...")
     payload = {"provider": "crypto", "symbol": "BTC/USD", "timeframe": "1d", "exchange": "kraken"}
+
+    start = time.time()
     r = requests.post(f"{BASE_URL}/analyze/market", json=payload)
-    print(f"Status: {r.status_code}, Current Price: {r.json().get('current_price')}")
+    t1 = time.time() - start
+    print(f"Status: {r.status_code}, Current Price: {r.json().get('current_price')}, Time: {t1:.2f}s")
+
+    # Test Caching
+    start = time.time()
+    r = requests.post(f"{BASE_URL}/analyze/market", json=payload)
+    t2 = time.time() - start
+    print(f"Cache Test Time: {t2:.4f}s (Should be < 0.1s)")
+
+    # Check for Price Action Patterns
+    data = r.json()
+    print(f"Price Action Patterns Found: {[p['pattern'] for p in data.get('price_action_patterns', [])]}")
 
     # 4. Confluence Score
     print("\nTesting /confluence-score...")
