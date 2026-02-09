@@ -1,141 +1,65 @@
 import requests
 import time
+import random
 
-def test_upload():
-    print("Testing /analyze/upload...")
-    # Generate dummy data
-    data = []
-    price = 100.0
-    for i in range(100):
-        price += 0.1
-        data.append({
-            "timestamp": str(i),
-            "open": price, "high": price+1, "low": price-1, "close": price, "volume": 1000
-        })
+BASE_URL = "http://127.0.0.1:8000"
 
-    resp = requests.post("http://127.0.0.1:8000/analyze/upload", json={"data": data})
-    res = resp.json()
-    print(res)
-    if "price_action" in res:
-        print("Success: found price_action field")
+def test_endpoints():
+    # 1. Indicators Discovery
+    print("Testing /indicators...")
+    r = requests.get(f"{BASE_URL}/indicators")
+    print(f"Status: {r.status_code}, Found {len(r.json().get('technical_indicators', []))} indicators")
 
-def test_market():
-    print("\nTesting /analyze/market (Crypto)...")
-    payload = {
-        "provider": "crypto",
-        "symbol": "BTC/USD",
-        "timeframe": "1d"
-    }
-    start = time.time()
-    resp = requests.post("http://127.0.0.1:8000/analyze/market", json=payload)
-    print(f"Time taken (Fresh): {time.time() - start:.2f}s")
-    print(resp.json())
+    # 2. Analyze Upload
+    print("\nTesting /analyze/upload...")
+    data = [{'open': 100+i, 'high': 110+i, 'low': 90+i, 'close': 105+i, 'volume': 1000} for i in range(100)]
+    r = requests.post(f"{BASE_URL}/analyze/upload", json={"data": data, "include_history": True, "indicators": ["RSI", "MACD"]})
+    print(f"Status: {r.status_code}, History size: {len(r.json().get('history', []))}")
 
-    print("\nTesting Cache...")
-    start = time.time()
-    resp = requests.post("http://127.0.0.1:8000/analyze/market", json=payload)
-    print(f"Time taken (Cached): {time.time() - start:.2f}s")
+    # 3. Analyze Market (Crypto)
+    print("\nTesting /analyze/market (Kraken)...")
+    payload = {"provider": "crypto", "symbol": "BTC/USD", "timeframe": "1d", "exchange": "kraken"}
+    r = requests.post(f"{BASE_URL}/analyze/market", json=payload)
+    print(f"Status: {r.status_code}, Current Price: {r.json().get('current_price')}")
 
-def test_filtering():
-    print("\nTesting Indicator Filtering...")
-    payload = {
-        "provider": "crypto",
-        "symbol": "BTC/USD",
-        "timeframe": "1d",
-        "exchange": "kraken",
-        "indicators": ["talib_RSI", "volatility_bbh"]
-    }
-    resp = requests.post("http://127.0.0.1:8000/analyze/market", json=payload)
-    res = resp.json()
-    print("Selected Indicators:", res.get("selected_indicators"))
-    if "selected_indicators" in res and "talib_RSI" in res["selected_indicators"]:
-        print("Success: only selected indicators returned")
-
-def test_scan_patterns():
-    print("\nTesting /scan-patterns...")
-    payload = {
-        "provider": "crypto",
-        "symbol": "BTC/USD",
-        "timeframe": "1d",
-        "exchange": "kraken"
-    }
-    resp = requests.post("http://127.0.0.1:8000/scan-patterns", json=payload)
-    print(f"Patterns found: {len(resp.json().get('patterns_found', []))}")
-
-def test_is_trend_bullish():
-    print("\nTesting /is-trend-bullish...")
-    payload = {
-        "provider": "crypto",
-        "symbol": "BTC/USD",
-        "timeframe": "1d",
-        "exchange": "kraken"
-    }
-    resp = requests.post("http://127.0.0.1:8000/is-trend-bullish", json=payload)
-    print(resp.json())
-
-def test_confluence():
+    # 4. Confluence Score
     print("\nTesting /confluence-score...")
-    payload = {
-        "provider": "crypto",
-        "symbol": "BTC/USD",
-        "timeframe": "1d",
-        "exchange": "kraken"
-    }
-    resp = requests.post("http://127.0.0.1:8000/confluence-score", json=payload)
-    print(resp.json())
+    r = requests.post(f"{BASE_URL}/confluence-score", json=payload)
+    print(f"Status: {r.status_code}, Score: {r.json().get('score')}, Sentiment: {r.json().get('sentiment')}")
 
-def test_mtf():
+    # 5. Multi-Timeframe
     print("\nTesting /analyze/mtf...")
-    payload = {
-        "provider": "crypto",
-        "symbol": "BTC/USD",
-        "timeframes": ["1h", "1d"]
-    }
-    resp = requests.post("http://127.0.0.1:8000/analyze/mtf", json=payload)
-    print(f"MTF timeframes analyzed: {list(resp.json().get('timeframes', {}).keys())}")
+    mtf_payload = {"provider": "crypto", "symbol": "BTC/USD", "timeframes": ["1h", "1d"]}
+    r = requests.post(f"{BASE_URL}/analyze/mtf", json=mtf_payload)
+    print(f"Status: {r.status_code}, Timeframes: {list(r.json().get('timeframes', {}).keys())}")
 
-def test_correlation():
+    # 6. Correlation
     print("\nTesting /analyze/correlation...")
-    payload = {
-        "assets": ["BTC/USD", "ETH/USD"],
-        "provider": "crypto"
-    }
-    resp = requests.post("http://127.0.0.1:8000/analyze/correlation", json=payload)
-    print(resp.json())
+    corr_payload = {"assets": ["BTC/USD", "ETH/USD"], "provider": "crypto"}
+    r = requests.post(f"{BASE_URL}/analyze/correlation", json=corr_payload)
+    print(f"Status: {r.status_code}, Correlation: {r.json()}")
 
-def test_greeks():
+    # 7. Heatmap
+    print("\nTesting /analyze/heatmap...")
+    heatmap_payload = {"assets": ["BTC/USD", "ETH/USD"], "metric": "RSI"}
+    r = requests.post(f"{BASE_URL}/analyze/heatmap", json=heatmap_payload)
+    print(f"Status: {r.status_code}, Data: {r.json()}")
+
+    # 8. Options Greeks
     print("\nTesting /options/greeks...")
-    payload = {
-        "underlying_price": 60000,
-        "strike": 62000,
-        "expiry": "2025-12-31",
-        "volatility": 0.5
-    }
-    resp = requests.post("http://127.0.0.1:8000/options/greeks", json=payload)
-    print(resp.json())
+    greeks_payload = {"underlying_price": 60000, "strike": 62000, "expiry": "2025-12-31", "volatility": 0.5}
+    r = requests.post(f"{BASE_URL}/options/greeks", json=greeks_payload)
+    print(f"Status: {r.status_code}, Delta: {r.json().get('delta')}")
 
-def test_stock():
-    print("\nTesting /analyze/market (Stock)...")
-    payload = {
-        "provider": "stock",
-        "symbol": "AAPL",
-        "timeframe": "1d"
-    }
-    resp = requests.post("http://127.0.0.1:8000/analyze/market", json=payload)
-    print(resp.json())
+    # 9. Bullish Check
+    print("\nTesting /is-trend-bullish...")
+    r = requests.post(f"{BASE_URL}/is-trend-bullish", json=payload)
+    print(f"Status: {r.status_code}, Bullish: {r.json().get('bullish')}")
+
+    # 10. Pattern Scan
+    print("\nTesting /scan-patterns...")
+    r = requests.post(f"{BASE_URL}/scan-patterns", json=payload)
+    print(f"Status: {r.status_code}, Patterns: {len(r.json().get('patterns', []))}")
 
 if __name__ == "__main__":
-    # Ensure server is running
-    try:
-        test_upload()
-        test_market()
-        test_filtering()
-        test_scan_patterns()
-        test_is_trend_bullish()
-        test_confluence()
-        test_mtf()
-        test_correlation()
-        test_greeks()
-        test_stock()
-    except Exception as e:
-        print(f"Error: {e}")
+    test_endpoints()
