@@ -40,6 +40,7 @@ Once running, visit `http://localhost:8000/docs` for the interactive Swagger UI.
 - `POST /analyze/market`: Full analysis of a specific asset.
 - `POST /analyze/upload`: Analyze your own OHLCV JSON data.
 - `GET /indicators`: List all available indicators and patterns.
+- `GET /analyze/chart`: Interactive TradingView-style chart with indicators.
 - `POST /confluence-score`: Get a consolidated sentiment score (-100 to +100).
 - `POST /analyze/mtf`: Multi-timeframe trend analysis.
 

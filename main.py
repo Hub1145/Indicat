@@ -12,9 +12,11 @@ from datetime import datetime
 from typing import List, Optional, Literal, Dict, Any
 from scipy.signal import argrelextrema
 from scipy.stats import norm
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Header, Query
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 import diskcache
+import json
 
 app = FastAPI(title="Pro-Trader Ultimate TA-as-a-Service API")
 
@@ -603,20 +605,23 @@ async def get_indicator_results(df, selected=None, history=False):
     return await asyncio.to_thread(get_indicator_results_sync, df, selected, history)
 
 async def fetch_data(provider, symbol, tf, ex_id="kraken"):
-    cache_key = f"data_{provider}_{symbol}_{tf}_{ex_id}"
+    # We fetch a buffer to ensure indicators (like EMA200) are accurate for the last 200 candles
+    fetch_limit = 500
+    cache_key = f"data_{provider}_{symbol}_{tf}_{ex_id}_{fetch_limit}"
     cached = cache.get(cache_key)
     if cached is not None: return pd.read_json(io.StringIO(cached))
 
     if provider == "crypto":
         ex = getattr(ccxt, ex_id if ex_id else "kraken")()
-        ohlcv = await asyncio.to_thread(ex.fetch_ohlcv, symbol, timeframe=tf, limit=200)
+        ohlcv = await asyncio.to_thread(ex.fetch_ohlcv, symbol, timeframe=tf, limit=fetch_limit)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     else:
         mapping = {"15m": "15m", "1h": "1h", "4h": "1h", "1d": "1d"}
-        data = await asyncio.to_thread(yf.download, symbol if provider == "stock" else f"{symbol}=X", period="1y", interval=mapping[tf], progress=False)
+        # For stocks/forex, period='1y' usually gives enough data, but we tail specifically
+        data = await asyncio.to_thread(yf.download, symbol if provider == "stock" else f"{symbol}=X", period="2y", interval=mapping[tf], progress=False)
         if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
         if tf == "4h": data = data.resample('4h').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last', 'Volume':'sum'}).dropna()
-        df = data.tail(200).reset_index()
+        df = data.tail(fetch_limit).reset_index()
         df.columns = [str(c).lower() for c in df.columns]
         df = df.rename(columns={'date': 'timestamp', 'datetime': 'timestamp'})
 
@@ -742,6 +747,155 @@ async def greeks(req: OptionsRequest):
     d2 = d1 - sigma*np.sqrt(T)
     delta = norm.cdf(d1) if req.option_type == "call" else norm.cdf(d1)-1
     return clean_dict({"delta": delta, "gamma": norm.pdf(d1) / (S*sigma*np.sqrt(T))})
+
+@app.get("/analyze/chart", response_class=HTMLResponse)
+async def get_chart(
+    provider: Literal["crypto", "stock", "forex"] = "crypto",
+    symbol: str = "BTC/USD",
+    timeframe: Literal["15m", "1h", "4h", "1d"] = "1d",
+    exchange: str = "kraken",
+    indicators: Optional[List[str]] = Query(None)
+):
+    # Default indicators for chart if none specified
+    if not indicators:
+        indicators = ["EMA20", "EMA50", "EMA200", "RSI", "MACD", "SUPERTREND"]
+    df = await fetch_data(provider, symbol, timeframe, exchange)
+    # Calculate indicators on full data
+    analysis = await get_indicator_results(df, indicators, history=True)
+
+    # Trim history to last 200 for display
+    chart_data = analysis["history"][-200:]
+
+    # Prepare Lightweight Charts JSON
+    # Candles: [{time: unix, open, high, low, close}]
+    # Note: Lightweight charts expects time in seconds or "YYYY-MM-DD"
+    candles = []
+    indicator_series = {}
+
+    for row in chart_data:
+        # Normalize timestamp
+        ts = row["timestamp"]
+        if isinstance(ts, (int, float)): t = int(ts/1000)
+        else: t = int(datetime.fromisoformat(str(ts).replace('Z', '+00:00')).timestamp())
+
+        candles.append({
+            "time": t,
+            "open": row["open"],
+            "high": row["high"],
+            "low": row["low"],
+            "close": row["close"]
+        })
+
+        # Extract indicators
+        for k, v in row.items():
+            if k in ["open", "high", "low", "close", "volume", "timestamp", "signal"]: continue
+            if not isinstance(v, (int, float, np.number)): continue
+            if k not in indicator_series: indicator_series[k] = []
+            indicator_series[k].append({"time": t, "value": float(v)})
+
+    # Heuristic for mapping indicators to panes
+    # Overlays (Line): Value close to price
+    # Oscillators (Separate): Value far from price
+    price_avg = np.mean([c["close"] for c in candles])
+
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>{symbol} - TA Visualizer</title>
+        <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+        <style>
+            body {{ margin: 0; padding: 20px; background: #131722; color: white; font-family: sans-serif; }}
+            .chart-container {{ width: 100%; height: 500px; margin-bottom: 10px; }}
+            .osc-container {{ width: 100%; height: 150px; margin-bottom: 10px; }}
+            .controls {{ margin-bottom: 10px; border-bottom: 1px solid #2B2B43; padding-bottom: 10px; }}
+        </style>
+    </head>
+    <body>
+        <div class="controls">
+            <h2 style="margin:0;">{symbol} ({timeframe})</h2>
+            <p style="color: #878b94; margin: 5px 0;">TA-as-a-Service Visualizer • Multi-Pane Layout</p>
+        </div>
+        <div id="main-chart" class="chart-container"></div>
+        <div id="oscillators"></div>
+
+        <script>
+            const chartOptions = {{
+                width: document.body.clientWidth - 40,
+                layout: {{ backgroundColor: '#131722', textColor: '#d1d4dc' }},
+                grid: {{ vertLines: {{ color: '#1e222d' }}, horzLines: {{ color: '#1e222d' }} }},
+                crosshair: {{ mode: LightweightCharts.CrosshairMode.Normal }},
+                timeScale: {{ borderColor: '#485c7b', timeVisible: true }}
+            }};
+
+            const mainChart = LightweightCharts.createChart(document.getElementById('main-chart'), {{
+                ...chartOptions,
+                height: 500
+            }});
+
+            const candleSeries = mainChart.addCandlestickSeries({{
+                upColor: '#089981', downColor: '#f23645', borderVisible: false,
+                wickUpColor: '#089981', wickDownColor: '#f23645'
+            }});
+            candleSeries.setData({json.dumps(candles)});
+
+            const indicatorSeriesData = {json.dumps(indicator_series)};
+            const priceAvg = {price_avg};
+            const oscCharts = [];
+
+            Object.keys(indicatorSeriesData).forEach(name => {{
+                const data = indicatorSeriesData[name];
+                const valAvg = data.reduce((a,b) => a + b.value, 0) / data.length;
+                const color = '#' + (Math.random().toString(16) + '000000').substring(2,8);
+
+                // If avg value is within 50% of price OR it's a known overlay
+                const isOverlay = Math.abs(valAvg - priceAvg) / priceAvg < 0.5 ||
+                                  ["UPPER", "LOWER", "MID", "STOP", "TREND"].some(k => name.includes(k));
+
+                if (isOverlay) {{
+                    const line = mainChart.addLineSeries({{ title: name, lineWidth: 1, color: color }});
+                    line.setData(data);
+                }} else {{
+                    const container = document.createElement('div');
+                    container.className = 'osc-container';
+                    document.getElementById('oscillators').appendChild(container);
+
+                    const oscChart = LightweightCharts.createChart(container, {{
+                        ...chartOptions,
+                        height: 150,
+                        timeScale: {{ ...chartOptions.timeScale, visible: false }}
+                    }});
+
+                    const line = oscChart.addLineSeries({{ title: name, lineWidth: 1, color: color }});
+                    line.setData(data);
+                    oscCharts.push(oscChart);
+                }}
+            }});
+
+            // Sync all charts
+            function syncCharts() {{
+                mainChart.timeScale().subscribeVisibleTimeRangeChange(range => {{
+                    oscCharts.forEach(c => c.timeScale().setVisibleRange(range));
+                }});
+                oscCharts.forEach(osc => {{
+                    osc.timeScale().subscribeVisibleTimeRangeChange(range => {{
+                        mainChart.timeScale().setVisibleRange(range);
+                        oscCharts.forEach(c => {{ if(c !== osc) c.timeScale().setVisibleRange(range) }});
+                    }});
+                }});
+            }}
+            syncCharts();
+
+            window.addEventListener('resize', () => {{
+                const w = document.body.clientWidth - 40;
+                mainChart.applyOptions({{ width: w }});
+                oscCharts.forEach(c => c.applyOptions({{ width: w }}));
+            }});
+        </script>
+    </body>
+    </html>
+    """
+    return html_content
 
 if __name__ == "__main__":
     import uvicorn
