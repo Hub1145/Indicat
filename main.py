@@ -212,10 +212,10 @@ def detect_smc(df):
         if body_size[i+1] > 1.5 * (avg_body[i+1] if not np.isnan(avg_body[i+1]) else 1):
             # Bullish OB: Last down candle before expansion
             if c[i] < o[i] and c[i+1] > h[i]:
-                obs.append({"type": "Bullish OB", "top": float(h[i]), "bottom": float(l[i]), "strength": float(body_size[i+1]/avg_body[i+1])})
+                obs.append({"type": "Bullish OB", "top": float(h[i]), "bottom": float(l[i]), "strength": float(body_size[i+1]/avg_body[i+1]), "index": i})
             # Bearish OB: Last up candle before expansion
             if c[i] > o[i] and c[i+1] < l[i]:
-                obs.append({"type": "Bearish OB", "top": float(h[i]), "bottom": float(l[i]), "strength": float(body_size[i+1]/avg_body[i+1])})
+                obs.append({"type": "Bearish OB", "top": float(h[i]), "bottom": float(l[i]), "strength": float(body_size[i+1]/avg_body[i+1]), "index": i})
         if len(obs) >= 5: break
 
     # 3. Fair Value Gaps (Refined)
@@ -223,9 +223,9 @@ def detect_smc(df):
     for i in range(len(df)-1, len(df)-50, -1):
         if i < 2: break
         if l[i] > h[i-2]: # Bullish
-            fvgs.append({"type": "Bullish FVG", "top": float(l[i]), "bottom": float(h[i-2]), "mid": float((l[i]+h[i-2])/2)})
+            fvgs.append({"type": "Bullish FVG", "top": float(l[i]), "bottom": float(h[i-2]), "mid": float((l[i]+h[i-2])/2), "index": i-1})
         elif h[i] < l[i-2]: # Bearish
-            fvgs.append({"type": "Bearish FVG", "top": float(l[i-2]), "bottom": float(h[i]), "mid": float((l[i-2]+h[i])/2)})
+            fvgs.append({"type": "Bearish FVG", "top": float(l[i-2]), "bottom": float(h[i]), "mid": float((l[i-2]+h[i])/2), "index": i-1})
         if len(fvgs) >= 5: break
 
     # 4. EQH / EQL
@@ -345,13 +345,12 @@ def detect_lux_zscore(df, length=144, smooth=20, history_depth=25, thresh=1.5):
     # We need to simulate the array-based logic for avg_top/bot
     z_vals = z_score.values
     top_reversals = []
-    bot_reversals = []
+    bot_reals = []
 
     avg_top_series = np.full(len(df), 2.0)
     avg_bot_series = np.full(len(df), -2.0)
 
     # Pivot Detection on z_score
-    # ph = ta.pivothigh(z_score, 1, 1) -> value at index-1 if index-1 is higher than index and index-2
     for i in range(2, len(df)):
         # Check for Pivot High at i-1
         if z_vals[i-1] > z_vals[i] and z_vals[i-1] > z_vals[i-2]:
@@ -364,11 +363,11 @@ def detect_lux_zscore(df, length=144, smooth=20, history_depth=25, thresh=1.5):
         if z_vals[i-1] < z_vals[i] and z_vals[i-1] < z_vals[i-2]:
             pl = z_vals[i-1]
             if pl < -thresh:
-                bot_reversals.insert(0, pl)
-                if len(bot_reversals) > history_depth: bot_reversals.pop()
+                bot_reals.insert(0, pl)
+                if len(bot_reals) > history_depth: bot_reals.pop()
 
         if top_reversals: avg_top_series[i] = np.mean(top_reversals)
-        if bot_reversals: avg_bot_series[i] = np.mean(bot_reversals)
+        if bot_reals: avg_bot_series[i] = np.mean(bot_reals)
 
     res_band_low = mean + (avg_top_series * std_dev)
     res_band_high = mean + ((avg_top_series + 0.5) * std_dev)
@@ -376,7 +375,6 @@ def detect_lux_zscore(df, length=144, smooth=20, history_depth=25, thresh=1.5):
     sup_band_low = mean + ((avg_bot_series - 0.5) * std_dev)
 
     # Signal Logic
-    # short_signal = high > res_band_low and not (high[1] > res_band_low[1])
     short_signal = (h.iloc[-1] > res_band_low.iloc[-1]) and not (h.iloc[-2] > res_band_low.iloc[-2])
     long_signal = (l.iloc[-1] < sup_band_high.iloc[-1]) and not (l.iloc[-2] < sup_band_high.iloc[-2])
 
@@ -390,21 +388,20 @@ def detect_lux_zscore(df, length=144, smooth=20, history_depth=25, thresh=1.5):
             "support_high": float(sup_band_high.iloc[-1]),
             "support_low": float(sup_band_low.iloc[-1])
         },
-        "signal": "Sell" if short_signal else ("Buy" if long_signal else "Neutral")
+        "signal": "Sell" if short_signal else ("Buy" if long_signal else "Neutral"),
+        "series": z_score
     }
 
 def detect_lux_msb_ob(df, pivot_len=7, msb_thresh=0.5):
     """Refined Market Structure Break & OB Probability Toolkit."""
     h, l, c, v = df['high'].values, df['low'].values, df['close'].values, df['volume'].values
     change = df['close'].diff()
-    # Displacement measure: relative candle size
     body_size = np.abs(df['close'] - df['open'])
     avg_body = body_size.rolling(20).mean()
     displacement = body_size / avg_body
 
     momentum_z = (change - change.rolling(50).mean()) / change.rolling(50).std()
 
-    # Pivots
     ph_idx = argrelextrema(h, np.greater, order=pivot_len)[0]
     pl_idx = argrelextrema(l, np.less, order=pivot_len)[0]
 
@@ -414,19 +411,15 @@ def detect_lux_msb_ob(df, pivot_len=7, msb_thresh=0.5):
     curr_mz = momentum_z.iloc[-1]
     curr_disp = displacement.iloc[-1]
 
-    # MSB requires price close beyond pivot AND displacement (momentum)
     is_msb_bull = c[-1] > last_ph and (curr_mz > msb_thresh or curr_disp > 1.5)
     is_msb_bear = c[-1] < last_pl and (curr_mz < -msb_thresh or curr_disp > 1.5)
 
-    # Order Blocks with Probability (based on volume and displacement)
     obs = []
     for i in range(len(df)-2, len(df)-20, -1):
         if i < 0: break
-        # Bullish OB: Last down candle before a strong bullish expansion that breaks structure
         if c[i] < df['open'].iloc[i] and c[i+1] > last_ph:
             prob = min(95, 60 + (displacement.iloc[i+1] * 10))
             obs.append({"type": "Bullish OB", "top": h[i], "bottom": l[i], "probability": float(prob), "mitigated": c[-1] < l[i]})
-        # Bearish OB: Last up candle before a strong bearish expansion that breaks structure
         if c[i] > df['open'].iloc[i] and c[i+1] < last_pl:
             prob = min(95, 60 + (displacement.iloc[i+1] * 10))
             obs.append({"type": "Bearish OB", "top": h[i], "bottom": l[i], "probability": float(prob), "mitigated": c[-1] > h[i]})
@@ -541,21 +534,21 @@ def get_indicator_results_sync(df, selected=None, history=False):
             else: talib_res[f] = res
         except: pass
 
-    # Optimized DataFrame construction to avoid fragmentation
     all_raw_cols = {}
     for k, v in talib_res.items():
         all_raw_cols[clean_name(k)] = v
     for c in ta_df.columns:
         all_raw_cols[clean_name(c)] = ta_df[c]
 
-    # Add custom indicators to all_raw for history/charting
     st_res = detect_supertrend(df)
     imba_res = detect_imba_trend(df)
     sqz_res = detect_squeeze_momentum(df)
+    zscore_res = detect_lux_zscore(df)
 
     all_raw_cols["SUPERTREND"] = st_res["series"]
     all_raw_cols["IMBA_TREND"] = imba_res["series"]
     all_raw_cols["SQUEEZE_MOMENTUM"] = sqz_res["series"]
+    all_raw_cols["LUX_ZSCORE"] = zscore_res["series"]
 
     all_raw = pd.DataFrame(all_raw_cols, index=df.index)
 
@@ -585,7 +578,7 @@ def get_indicator_results_sync(df, selected=None, history=False):
         "divergences": {"rsi": detect_divergences(df, "RSI"), "macd": detect_divergences(df, "MACD")},
         "price_action_patterns": detect_price_action_patterns(df),
         "custom_lux_algo": {
-            "zscore_zones": detect_lux_zscore(df),
+            "zscore_zones": {k:v for k,v in zscore_res.items() if k != "series"},
             "market_structure": detect_lux_msb_ob(df)
         },
         "squeeze_momentum": {k:v for k,v in sqz_res.items() if k != "series"},
@@ -614,12 +607,10 @@ async def get_indicator_results(df, selected=None, history=False):
 async def fetch_data_binance(symbol, timeframe, limit=500):
     """Fetches OHLCV from Binance UMFutures."""
     try:
-        # Normalize symbol
         s = symbol.upper().replace("/", "")
         if s.endswith("USD"): s = s.replace("USD", "USDT")
         if not (s.endswith("USDT") or s.endswith("BUSD")): s += "USDT"
 
-        print(f"Fetching {s} {timeframe} from Binance...")
         resp = await asyncio.to_thread(binance_client.klines, s, timeframe, limit=limit)
         if not resp:
             raise HTTPException(status_code=404, detail=f"No data found for {s}")
@@ -629,14 +620,11 @@ async def fetch_data_binance(symbol, timeframe, limit=500):
         df = df.astype(float)
         return df
     except ClientError as error:
-        print(f"Binance ClientError: {error.error_message}")
         raise HTTPException(status_code=500, detail=f"Binance Error: {error.error_message}")
     except Exception as e:
-        print(f"Binance Fetch Exception: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Data Fetch Error: {str(e)}")
 
 async def fetch_data(provider, symbol, tf, ex_id="binance"):
-    # We fetch a buffer to ensure indicators (like EMA200) are accurate for the last 200 candles
     fetch_limit = 500
     cache_key = f"data_{provider}_{symbol}_{tf}_{ex_id}_{fetch_limit}"
     cached = cache.get(cache_key)
@@ -646,15 +634,12 @@ async def fetch_data(provider, symbol, tf, ex_id="binance"):
         try:
             df = await fetch_data_binance(symbol, tf, limit=fetch_limit)
         except Exception as e:
-            print(f"Binance failed ({str(e)}). Falling back to Kraken via CCXT...")
             ex = ccxt.kraken()
-            # Normalize for CCXT if needed
             s = symbol if "/" in symbol else f"{symbol}/USDT"
             ohlcv = await asyncio.to_thread(ex.fetch_ohlcv, s, timeframe=tf, limit=fetch_limit)
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     else:
         mapping = {"15m": "15m", "1h": "1h", "4h": "1h", "1d": "1d"}
-        # For stocks/forex, period='2y' usually gives enough data
         data = await asyncio.to_thread(yf.download, symbol if provider == "stock" else f"{symbol}=X", period="2y", interval=mapping[tf], progress=False)
         if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
         if tf == "4h": data = data.resample('4h').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last', 'Volume':'sum'}).dropna()
@@ -747,7 +732,6 @@ async def confluence(req: MarketRequest):
     elif a['summary']['signal'] == "Sell": score -= 40
     score += 20 if a['summary']['trend'] == "Bullish" else -20
 
-    # Structural Confluence
     struct = a['institutional_strategies']['structure']
     if "Bullish" in struct['swing']: score += 20
     elif "Bearish" in struct['swing']: score -= 20
@@ -793,151 +777,174 @@ async def get_chart(
     exchange: str = "kraken",
     indicators: Optional[List[str]] = Query(None)
 ):
-    # Default indicators for chart if none specified
     if not indicators:
         indicators = ["EMA20", "EMA50", "EMA200", "RSI", "MACD", "SUPERTREND", "IMBA_TREND", "SQUEEZE_MOMENTUM"]
-    df = await fetch_data(provider, symbol, timeframe, exchange)
-    # Calculate indicators on full data
-    analysis = await get_indicator_results(df, indicators, history=True)
 
-    # Trim history to last 200 for display
+    category_map = {
+        "SMC": ["SUPERTREND", "IMBA_TREND", "SQUEEZE_MOMENTUM", "LUX_ZSCORE"],
+        "LUX": ["LUX_ZSCORE"],
+        "TREND": ["SUPERTREND", "IMBA_TREND"],
+        "SQUEEZE": ["SQUEEZE_MOMENTUM"]
+    }
+    target_indicators = [i.upper() for i in indicators]
+    for ind in indicators:
+        if ind.upper() in category_map:
+            target_indicators.extend(category_map[ind.upper()])
+
+    df = await fetch_data(provider, symbol, timeframe, exchange)
+    analysis = await get_indicator_results(df, indicators, history=True)
     chart_data = analysis["history"][-200:]
 
-    # Prepare Lightweight Charts JSON
-    candles = []
-    indicator_series = {}
-    markers = []
+    idx_to_time = {}
+    for i, row in df.iterrows():
+        ts = row["timestamp"]
+        if isinstance(ts, (int, float, np.integer)): t = int(ts/1000)
+        else: t = int(pd.to_datetime(ts).timestamp())
+        idx_to_time[i] = t
 
-    # Extract patterns and institutional logic from the latest analysis
+    candles, indicator_series, markers = [], {}, []
     smc = analysis.get("institutional_strategies", {})
     price_patterns = analysis.get("price_action_patterns", [])
-    lux = analysis.get("custom_lux_algo", {})
     dynamics = analysis.get("market_dynamics", {})
 
-    # Heuristic for mapping indicators to panes
+    for p in price_patterns:
+        if p.get("index") in idx_to_time:
+            markers.append({"time": idx_to_time[p["index"]], "position": "aboveBar", "color": "#f23645", "shape": "arrowDown", "text": p["pattern"]})
+
+    for ob in smc.get("order_blocks", []):
+        if ob.get("index") in idx_to_time:
+            markers.append({"time": idx_to_time[ob["index"]], "position": "belowBar", "color": "#2158f3", "shape": "square", "text": "OB"})
+
+    for fvg in smc.get("fair_value_gaps", []):
+        if fvg.get("index") in idx_to_time:
+            markers.append({"time": idx_to_time[fvg["index"]], "position": "belowBar", "color": "#00ff68", "shape": "circle", "text": "FVG"})
+
     price_avg = np.mean([r["close"] for r in chart_data])
 
-    # JS Logic moved to template to keep it simple and avoid duplication
-
     for row in chart_data:
-        # Normalize timestamp
         ts = row["timestamp"]
         if isinstance(ts, (int, float)): t = int(ts/1000)
         else: t = int(datetime.fromisoformat(str(ts).replace('Z', '+00:00')).timestamp())
 
-        candles.append({
-            "time": t,
-            "open": row["open"],
-            "high": row["high"],
-            "low": row["low"],
-            "close": row["close"]
-        })
+        candles.append({"time": t, "open": row["open"], "high": row["high"], "low": row["low"], "close": row["close"]})
 
-        # Extract indicators
         for k, v in row.items():
             if k in ["open", "high", "low", "close", "volume", "timestamp", "signal"]: continue
             if not isinstance(v, (int, float, np.number)): continue
+
+            # If it's a candlestick pattern, add a marker IF it's detected (v != 0)
+            if k.startswith("CDL"):
+                if v != 0:
+                    markers.append({
+                        "time": t,
+                        "position": "aboveBar" if v < 0 else "belowBar",
+                        "color": "#e91e63" if v < 0 else "#9c27b0",
+                        "shape": "arrowDown" if v < 0 else "arrowUp",
+                        "text": k[3:]
+                    })
+                continue # Never add CDL to indicator_series (avoiding pane explosion)
+
+            if k.upper() not in target_indicators: continue
             if k not in indicator_series: indicator_series[k] = []
             indicator_series[k].append({"time": t, "value": float(v)})
 
-    # Create markers for signals and patterns
-    for p in price_patterns:
-        markers.append({"time": t, "position": "aboveBar", "color": "#f23645", "shape": "arrowDown", "text": p["pattern"]})
+    sr_levels = dynamics.get("levels", [])
+    js_logic = """
+            const chartWidth = 1000;
+            const mainChart = LightweightCharts.createChart(document.getElementById('main-chart'), {
+                width: chartWidth, height: 500,
+                layout: { backgroundColor: '#131722', textColor: '#d1d4dc' },
+                grid: { vertLines: { color: '#1e222d' }, horzLines: { color: '#1e222d' } },
+                timeScale: { borderColor: '#485c7b', timeVisible: true }
+            });
 
-    # Add SMC Order Blocks and FVGs as markers/static levels if they are in the range
-    # (In a lightweight chart, we'll mark the source candles for OB/FVG)
-    for ob in smc.get("order_blocks", []):
-        markers.append({"time": t, "position": "belowBar", "color": "#2158f3", "shape": "square", "text": "OB"})
-
-    html_content = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>{symbol} - TA Visualizer</title>
-        <script src="https://unpkg.com/lightweight-charts@4.0.0/dist/lightweight-charts.standalone.production.js"></script>
-        <style>
-            body {{ margin: 0; padding: 20px; background: #131722; color: white; font-family: sans-serif; }}
-            .chart-container {{ width: 100%; height: 500px; margin-bottom: 10px; }}
-            .osc-container {{ width: 100%; height: 150px; margin-bottom: 10px; }}
-            .controls {{ margin-bottom: 10px; border-bottom: 1px solid #2B2B43; padding-bottom: 10px; }}
-        </style>
-    </head>
-    <body>
-        <div class="controls">
-            <h2 style="margin:0;">{symbol} ({timeframe})</h2>
-            <p style="color: #878b94; margin: 5px 0;">TA-as-a-Service Visualizer • Multi-Pane Layout</p>
-        </div>
-        <div id="main-chart" style="width: 100%; height: 500px;"></div>
-        <div id="oscillators"></div>
-
-        <script>
-            const candles = {json.dumps(candles)};
-            const indicatorSeriesData = {json.dumps(indicator_series)};
-            const markers = {json.dumps(markers)};
-            const priceAvg = {price_avg};
-
-            const mainChart = LightweightCharts.createChart(document.getElementById('main-chart'), {{
-                width: window.innerWidth - 40,
-                height: 500,
-                layout: {{ background: {{ type: 'solid', color: '#131722' }}, textColor: '#d1d4dc' }},
-                grid: {{ vertLines: {{ color: '#1e222d' }}, horzLines: {{ color: '#1e222d' }} }},
-                timeScale: {{ borderColor: '#485c7b', timeVisible: true }}
-            }});
-
-            const candleSeries = mainChart.addCandlestickSeries({{
+            const candleSeries = mainChart.addCandlestickSeries({
                 upColor: '#089981', downColor: '#f23645', borderVisible: false,
                 wickUpColor: '#089981', wickDownColor: '#f23645'
-            }});
+            });
 
             candleSeries.setData(candles);
             candleSeries.setMarkers(markers);
 
-            const oscCharts = [];
+            srLevels.forEach(lv => {
+                candleSeries.createPriceLine({
+                    price: lv.price, color: lv.type === 'Resistance' ? '#f23645' : '#089981',
+                    lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: lv.type
+                });
+            });
 
-            Object.keys(indicatorSeriesData).forEach(name => {{
+            const oscCharts = [];
+            Object.keys(indicatorSeriesData).forEach(name => {
                 const data = indicatorSeriesData[name];
                 if (data.length === 0) return;
                 const valAvg = data.reduce((a,b) => a + b.value, 0) / data.length;
                 const color = '#' + (Math.random().toString(16) + '000000').substring(2,8);
-
                 const isOverlay = Math.abs(valAvg - priceAvg) / priceAvg < 0.5 ||
-                                  ["UPPER", "LOWER", "MID", "STOP", "TREND", "IMBA", "BANDS"].some(k => name.includes(k));
+                              ["UPPER", "LOWER", "MID", "STOP", "TREND", "IMBA", "BANDS", "EMA", "SMA", "VWAP"].some(k => name.toUpperCase().includes(k));
 
-                if (isOverlay) {{
-                    const line = mainChart.addLineSeries({{ title: name, lineWidth: 1, color: color }});
+                if (isOverlay) {
+                    const line = mainChart.addLineSeries({ title: name, lineWidth: 1, color: color });
                     line.setData(data);
-                }} else {{
+                } else {
                     const container = document.createElement('div');
                     container.className = 'osc-container';
                     document.getElementById('oscillators').appendChild(container);
-
-                    const oscChart = LightweightCharts.createChart(container, {{
-                        width: window.innerWidth - 40,
-                        height: 150,
-                        layout: {{ background: {{ type: 'solid', color: '#131722' }}, textColor: '#d1d4dc' }},
-                        grid: {{ vertLines: {{ color: '#1e222d' }}, horzLines: {{ color: '#1e222d' }} }},
-                        timeScale: {{ visible: false }}
-                    }});
-
-                    const line = oscChart.addLineSeries({{ title: name, lineWidth: 1, color: color }});
-                    line.setData(data);
+                    const oscChart = LightweightCharts.createChart(container, {
+                        width: chartWidth, height: 150,
+                        layout: { backgroundColor: '#131722', textColor: '#d1d4dc' },
+                        grid: { vertLines: { color: '#1e222d' }, horzLines: { color: '#1e222d' } },
+                        timeScale: { visible: false }
+                    });
+                    if (name.includes('HIST') || name.includes('MOMENTUM')) {
+                        const hist = oscChart.addHistogramSeries({ title: name, color: color, priceFormat: { type: 'volume' } });
+                        hist.setData(data.map(d => ({ ...d, color: d.value >= 0 ? '#26a69a' : '#ef5350' })));
+                    } else {
+                        const line = oscChart.addLineSeries({ title: name, lineWidth: 1, color: color });
+                        line.setData(data);
+                    }
                     oscCharts.push(oscChart);
-                }}
-            }});
-
-            mainChart.timeScale().subscribeVisibleTimeRangeChange(range => {{
+                }
+            });
+            mainChart.timeScale().subscribeVisibleTimeRangeChange(range => {
                 oscCharts.forEach(c => c.timeScale().setVisibleRange(range));
-            }});
+            });
+    """
 
-            window.addEventListener('resize', () => {{
-                const w = window.innerWidth - 40;
-                mainChart.applyOptions({{ width: w }});
-                oscCharts.forEach(c => c.applyOptions({{ width: w }}));
+    html_template = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>SYMBOL_PLACEHOLDER - TA Visualizer</title>
+        <script src="https://unpkg.com/lightweight-charts@4.0.0/dist/lightweight-charts.standalone.production.js"></script>
+        <style>
+            body { margin: 0; padding: 20px; background: #131722; color: white; font-family: sans-serif; }
+            .chart-container { width: 100%; height: 500px; margin-bottom: 10px; }
+            .osc-container { width: 100%; height: 150px; margin-bottom: 10px; }
+            .controls { margin-bottom: 10px; border-bottom: 1px solid #2B2B43; padding-bottom: 10px; }
+        </style>
+    </head>
+    <body>
+        <div class="controls">
+            <h2 style="margin:0;">SYMBOL_PLACEHOLDER (TIMEFRAME_PLACEHOLDER)</h2>
+            <p style="color: #878b94; margin: 5px 0;">TA-as-a-Service Visualizer • Multi-Pane Layout</p>
+        </div>
+        <div id="main-chart" style="width: 100%; height: 500px;"></div>
+        <div id="oscillators"></div>
+        <script>
+            window.addEventListener('DOMContentLoaded', () => {
+                const candles = """ + json.dumps(candles) + """;
+                const indicatorSeriesData = """ + json.dumps(indicator_series) + """;
+                const markers = """ + json.dumps(markers) + """;
+                const srLevels = """ + json.dumps(sr_levels) + """;
+                const priceAvg = """ + str(price_avg) + """;
+                """ + js_logic + """
             });
         </script>
     </body>
     </html>
     """
+
+    html_content = html_template.replace("SYMBOL_PLACEHOLDER", symbol).replace("TIMEFRAME_PLACEHOLDER", timeframe)
     return html_content
 
 if __name__ == "__main__":

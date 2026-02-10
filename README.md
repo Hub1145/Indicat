@@ -50,5 +50,15 @@ This API is pre-configured for **RapidAPI**.
 - Set `RAPIDAPI_PROXY_SECRET` in your environment.
 - The middleware automatically validates requests coming through the RapidAPI proxy.
 
+## 🖥 Resource Requirements
+
+Estimated requirements for production deployment:
+
+| Metric | Requirement (100 Concurrent Users) |
+| :--- | :--- |
+| **RAM** | ~1 GB |
+| **Storage** | ~2 GB |
+| **CPU** | 2+ Cores recommended for parallel TA calculation |
+
 ---
 Built for speed, accuracy, and profitability.
