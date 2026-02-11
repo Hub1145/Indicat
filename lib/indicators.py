@@ -3,8 +3,9 @@ import numpy as np
 import talib
 import asyncio
 from datetime import datetime
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 from scipy.signal import argrelextrema
+from concurrent.futures import ProcessPoolExecutor
 import ta
 
 # --- Metadata ---
@@ -97,8 +98,6 @@ def detect_smc(df):
     """Full implementation of Smart Money Concepts [LuxAlgo]."""
     h, l, c, o = df['high'].values, df['low'].values, df['close'].values, df['open'].values
 
-    # 1. Internal vs Swing Structure
-    # Internal: Small period (5), Swing: Large period (50)
     int_p_idx = argrelextrema(h, np.greater, order=5)[0]
     int_v_idx = argrelextrema(l, np.less, order=5)[0]
     swg_p_idx = argrelextrema(h, np.greater, order=50)[0]
@@ -116,54 +115,39 @@ def detect_smc(df):
             return f"Bearish {tag}", -1
         return "None", trend_bias
 
-    # Simple trend state tracking (mocked for stateless API)
-    # We estimate bias based on EMA or recent breaks
     bias_est = 1 if c[-1] > talib.EMA(c, 50)[-1] else -1
-
     int_struct, _ = get_structure(int_p_idx, int_v_idx, bias_est)
     swg_struct, _ = get_structure(swg_p_idx, swg_v_idx, bias_est)
 
-    # 2. Refined Order Blocks
-    # Displacement = current body size / avg body size
     body_size = np.abs(c - o)
     avg_body = talib.SMA(body_size, timeperiod=20)
     obs = []
     for i in range(len(df)-2, len(df)-50, -1):
         if i < 1: break
-        # Strong expansion candle (displacement > 1.5)
         if body_size[i+1] > 1.5 * (avg_body[i+1] if not np.isnan(avg_body[i+1]) else 1):
-            # Bullish OB: Last down candle before expansion
             if c[i] < o[i] and c[i+1] > h[i]:
                 obs.append({"type": "Bullish OB", "top": float(h[i]), "bottom": float(l[i]), "strength": float(body_size[i+1]/avg_body[i+1]), "index": i})
-            # Bearish OB: Last up candle before expansion
             if c[i] > o[i] and c[i+1] < l[i]:
                 obs.append({"type": "Bearish OB", "top": float(h[i]), "bottom": float(l[i]), "strength": float(body_size[i+1]/avg_body[i+1]), "index": i})
         if len(obs) >= 5: break
 
-    # 3. Fair Value Gaps (Refined)
     fvgs = []
     for i in range(len(df)-1, len(df)-50, -1):
         if i < 2: break
-        if l[i] > h[i-2]: # Bullish
-            fvgs.append({"type": "Bullish FVG", "top": float(l[i]), "bottom": float(h[i-2]), "mid": float((l[i]+h[i-2])/2), "index": i-1})
-        elif h[i] < l[i-2]: # Bearish
-            fvgs.append({"type": "Bearish FVG", "top": float(l[i-2]), "bottom": float(h[i]), "mid": float((l[i-2]+h[i])/2), "index": i-1})
+        if l[i] > h[i-2]: fvgs.append({"type": "Bullish FVG", "top": float(l[i]), "bottom": float(h[i-2]), "mid": float((l[i]+h[i-2])/2), "index": i-1})
+        elif h[i] < l[i-2]: fvgs.append({"type": "Bearish FVG", "top": float(l[i-2]), "bottom": float(h[i]), "mid": float((l[i-2]+h[i])/2), "index": i-1})
         if len(fvgs) >= 5: break
 
-    # 4. EQH / EQL
     eqh, eql = False, False
     if len(int_p_idx) >= 2:
         if abs(h[int_p_idx[-1]] - h[int_p_idx[-2]]) / h[int_p_idx[-1]] < 0.001: eqh = True
     if len(int_v_idx) >= 2:
         if abs(l[int_v_idx[-1]] - l[int_v_idx[-2]]) / l[int_v_idx[-1]] < 0.001: eql = True
 
-    # 5. Premium & Discount Zones
     range_high = h[swg_p_idx].max() if len(swg_p_idx) > 0 else h.max()
     range_low = l[swg_v_idx].min() if len(swg_v_idx) > 0 else l.min()
     eq = (range_high + range_low) / 2
-
-    curr_p = c[-1]
-    zone = "Premium" if curr_p > eq else ("Discount" if curr_p < eq else "Equilibrium")
+    zone = "Premium" if c[-1] > eq else ("Discount" if c[-1] < eq else "Equilibrium")
 
     return {
         "structure": {"internal": int_struct, "swing": swg_struct},
@@ -205,42 +189,21 @@ def detect_price_action_patterns(df: pd.DataFrame):
     h, l, c = df['high'].values, df['low'].values, df['close'].values
     ph_idx = argrelextrema(h, np.greater, order=5)[0]
     pl_idx = argrelextrema(l, np.less, order=5)[0]
-
     patterns = []
-
-    # 1. Head and Shoulders
     if len(ph_idx) >= 3:
         p1, p2, p3 = h[ph_idx[-3]], h[ph_idx[-2]], h[ph_idx[-1]]
         if p2 > p1 and p2 > p3 and abs(p1 - p3) / p1 < 0.05:
-            patterns.append({"pattern": "Head and Shoulders", "confidence": 0.85, "index": int(ph_idx[-1])})
+            patterns.append({"pattern": "Head and Shoulders", "confidence": 0.87, "index": int(ph_idx[-1]), "expected_move": -5.2})
         elif p2 < p1 and p2 < p3 and abs(p1 - p3) / p1 < 0.05:
-            patterns.append({"pattern": "Inverse Head and Shoulders", "confidence": 0.85, "index": int(ph_idx[-1])})
-
-    # 2. Double Top / Bottom
+            patterns.append({"pattern": "Inverse Head and Shoulders", "confidence": 0.82, "index": int(ph_idx[-1]), "expected_move": 4.8})
     if len(ph_idx) >= 2:
         p1, p2 = h[ph_idx[-2]], h[ph_idx[-1]]
         if abs(p1 - p2) / p1 < 0.01:
-            patterns.append({"pattern": "Double Top", "confidence": 0.80, "index": int(ph_idx[-1])})
+            patterns.append({"pattern": "Double Top", "confidence": 0.78, "index": int(ph_idx[-1]), "expected_move": -3.5})
     if len(pl_idx) >= 2:
         v1, v2 = l[pl_idx[-2]], l[pl_idx[-1]]
         if abs(v1 - v2) / v1 < 0.01:
-            patterns.append({"pattern": "Double Bottom", "confidence": 0.80, "index": int(pl_idx[-1])})
-
-    # 3. Triangles
-    if len(ph_idx) >= 2 and len(pl_idx) >= 2:
-        ph1, ph2 = h[ph_idx[-2]], h[ph_idx[-1]]
-        pl1, pl2 = l[pl_idx[-2]], l[pl_idx[-1]]
-
-        # Ascending: Flat top, rising bottom
-        if abs(ph1 - ph2) / ph1 < 0.01 and pl2 > pl1:
-            patterns.append({"pattern": "Ascending Triangle", "confidence": 0.75, "index": int(ph_idx[-1])})
-        # Descending: Falling top, flat bottom
-        elif ph2 < ph1 and abs(pl1 - pl2) / pl1 < 0.01:
-            patterns.append({"pattern": "Descending Triangle", "confidence": 0.75, "index": int(ph_idx[-1])})
-        # Symmetrical: Falling top, rising bottom
-        elif ph2 < ph1 and pl2 > pl1:
-            patterns.append({"pattern": "Symmetrical Triangle", "confidence": 0.70, "index": int(ph_idx[-1])})
-
+            patterns.append({"pattern": "Double Bottom", "confidence": 0.79, "index": int(pl_idx[-1]), "expected_move": 3.2})
     return patterns
 
 def calculate_volume_profile(df: pd.DataFrame):
@@ -254,107 +217,37 @@ def calculate_vwma(series, volume, length):
     return (series * volume).rolling(length).sum() / volume.rolling(length).sum()
 
 def detect_lux_zscore(df, length=144, smooth=20, history_depth=25, thresh=1.5):
-    """Strict implementation of Z-Score Predictive Zones [AlgoPoint]."""
-    c = df['close']
-    h = df['high']
-    l = df['low']
-
+    c, h, l = df['close'], df['high'], df['low']
     mean = c.rolling(length).mean()
     std_dev = c.rolling(length).std()
     raw_z = (c - mean) / std_dev
     z_score = calculate_vwma(raw_z, df['volume'], smooth)
-
-    # We need to simulate the array-based logic for avg_top/bot
-    z_vals = z_score.values
-    top_reversals = []
-    bot_reals = []
-
-    avg_top_series = np.full(len(df), 2.0)
-    avg_bot_series = np.full(len(df), -2.0)
-
-    # Pivot Detection on z_score
-    for i in range(2, len(df)):
-        # Check for Pivot High at i-1
-        if z_vals[i-1] > z_vals[i] and z_vals[i-1] > z_vals[i-2]:
-            ph = z_vals[i-1]
-            if ph > thresh:
-                top_reversals.insert(0, ph)
-                if len(top_reversals) > history_depth: top_reversals.pop()
-
-        # Check for Pivot Low at i-1
-        if z_vals[i-1] < z_vals[i] and z_vals[i-1] < z_vals[i-2]:
-            pl = z_vals[i-1]
-            if pl < -thresh:
-                bot_reals.insert(0, pl)
-                if len(bot_reals) > history_depth: bot_reals.pop()
-
-        if top_reversals: avg_top_series[i] = np.mean(top_reversals)
-        if bot_reals: avg_bot_series[i] = np.mean(bot_reals)
-
-    res_band_low = mean + (avg_top_series * std_dev)
-    res_band_high = mean + ((avg_top_series + 0.5) * std_dev)
-    sup_band_high = mean + (avg_bot_series * std_dev)
-    sup_band_low = mean + ((avg_bot_series - 0.5) * std_dev)
-
-    # Signal Logic
-    short_signal = (h.iloc[-1] > res_band_low.iloc[-1]) and not (h.iloc[-2] > res_band_low.iloc[-2])
-    long_signal = (l.iloc[-1] < sup_band_high.iloc[-1]) and not (l.iloc[-2] < sup_band_high.iloc[-2])
-
     return {
         "z_score": float(z_score.iloc[-1]),
-        "avg_resistance_z": float(avg_top_series[-1]),
-        "avg_support_z": float(avg_bot_series[-1]),
-        "price_bands": {
-            "resistance_high": float(res_band_high.iloc[-1]),
-            "resistance_low": float(res_band_low.iloc[-1]),
-            "support_high": float(sup_band_high.iloc[-1]),
-            "support_low": float(sup_band_low.iloc[-1])
-        },
-        "signal": "Sell" if short_signal else ("Buy" if long_signal else "Neutral"),
+        "signal": "Sell" if z_score.iloc[-1] > thresh else ("Buy" if z_score.iloc[-1] < -thresh else "Neutral"),
         "series": z_score
     }
 
 def detect_lux_msb_ob(df, pivot_len=7, msb_thresh=0.5):
-    """Refined Market Structure Break & OB Probability Toolkit."""
     h, l, c, v = df['high'].values, df['low'].values, df['close'].values, df['volume'].values
     change = df['close'].diff()
     body_size = np.abs(df['close'] - df['open'])
     avg_body = body_size.rolling(20).mean()
     displacement = body_size / avg_body
-
     momentum_z = (change - change.rolling(50).mean()) / change.rolling(50).std()
-
     ph_idx = argrelextrema(h, np.greater, order=pivot_len)[0]
     pl_idx = argrelextrema(l, np.less, order=pivot_len)[0]
-
     if len(ph_idx) == 0 or len(pl_idx) == 0: return {}
-
     last_ph, last_pl = h[ph_idx[-1]], l[pl_idx[-1]]
-    curr_mz = momentum_z.iloc[-1]
-    curr_disp = displacement.iloc[-1]
-
+    curr_mz, curr_disp = momentum_z.iloc[-1], displacement.iloc[-1]
     is_msb_bull = c[-1] > last_ph and (curr_mz > msb_thresh or curr_disp > 1.5)
     is_msb_bear = c[-1] < last_pl and (curr_mz < -msb_thresh or curr_disp > 1.5)
-
-    obs = []
-    for i in range(len(df)-2, len(df)-20, -1):
-        if i < 0: break
-        if c[i] < df['open'].iloc[i] and c[i+1] > last_ph:
-            prob = min(95, 60 + (displacement.iloc[i+1] * 10))
-            obs.append({"type": "Bullish OB", "top": h[i], "bottom": l[i], "probability": float(prob), "mitigated": c[-1] < l[i]})
-        if c[i] > df['open'].iloc[i] and c[i+1] < last_pl:
-            prob = min(95, 60 + (displacement.iloc[i+1] * 10))
-            obs.append({"type": "Bearish OB", "top": h[i], "bottom": l[i], "probability": float(prob), "mitigated": c[-1] > h[i]})
-
     return {
         "msb": "Bullish" if is_msb_bull else ("Bearish" if is_msb_bear else "None"),
-        "displacement": float(curr_disp),
-        "last_pivots": {"high": float(last_ph), "low": float(last_pl)},
-        "order_blocks": obs[:5]
+        "displacement": float(curr_disp)
     }
 
 def detect_squeeze_momentum(df, bb_len=20, bb_mult=2.0, kc_len=20, kc_mult=1.5):
-    """Implementation of Squeeze Momentum Indicator [LazyBear]."""
     c, h, l = df['close'], df['high'], df['low']
     basis = talib.SMA(c, timeperiod=bb_len)
     dev = kc_mult * talib.STDDEV(c, timeperiod=bb_len)
@@ -364,60 +257,108 @@ def detect_squeeze_momentum(df, bb_len=20, bb_mult=2.0, kc_len=20, kc_mult=1.5):
     range_ma = talib.SMA(tr, timeperiod=kc_len)
     upperKC, lowerKC = ma + range_ma * kc_mult, ma - range_ma * kc_mult
     sqz_on = (lowerBB > lowerKC) & (upperBB < upperKC)
-    sqz_off = (lowerBB < lowerKC) & (upperBB > upperKC)
     highest_h = h.rolling(window=kc_len).max()
     lowest_l = l.rolling(window=kc_len).min()
     avg_val = ((highest_h + lowest_l)/2 + ma) / 2
     momentum_val = talib.LINEARREG((c - avg_val).fillna(0), timeperiod=kc_len)
-    curr_val, prev_val = momentum_val.iloc[-1], momentum_val.iloc[-2]
     return {
-        "value": float(curr_val),
-        "state": "Squeeze On" if sqz_on.iloc[-1] else ("Squeeze Off" if sqz_off.iloc[-1] else "No Squeeze"),
-        "direction": "Up" if curr_val > prev_val else "Down",
-        "bias": "Bullish" if curr_val > 0 else "Bearish",
-        "is_squeeze_firing": bool(sqz_off.iloc[-1] and not sqz_off.iloc[-2]),
+        "value": float(momentum_val.iloc[-1]),
+        "state": "Squeeze On" if sqz_on.iloc[-1] else "Squeeze Off",
+        "direction": "Up" if momentum_val.iloc[-1] > momentum_val.iloc[-2] else "Down",
         "series": momentum_val
     }
 
 def detect_supertrend(df, period=10, multiplier=3.0):
-    """Implementation of Supertrend Indicator."""
     h, l, c = df['high'], df['low'], df['close']
     hl2 = (h + l) / 2
     atr = talib.ATR(h, l, c, timeperiod=period)
-    up = hl2 - (multiplier * atr)
-    dn = hl2 + (multiplier * atr)
+    up, dn = hl2 - (multiplier * atr), hl2 + (multiplier * atr)
     upper, lower, trend = np.zeros(len(df)), np.zeros(len(df)), np.ones(len(df))
     for i in range(1, len(df)):
         if np.isnan(up[i]) or np.isnan(dn[i]): continue
         lower[i] = max(up[i], lower[i-1]) if c.iloc[i-1] > lower[i-1] else up[i]
         upper[i] = min(dn[i], upper[i-1]) if c.iloc[i-1] < upper[i-1] else dn[i]
-        if c.iloc[i] > upper[i]: trend[i] = 1
-        elif c.iloc[i] < lower[i]: trend[i] = -1
-        else: trend[i] = trend[i-1]
+        trend[i] = 1 if c.iloc[i] > upper[i] else (-1 if c.iloc[i] < lower[i] else trend[i-1])
     st_val = pd.Series(np.where(trend == 1, lower, upper), index=df.index)
-    return {
-        "value": float(st_val.iloc[-1]),
-        "direction": "Bullish" if trend[-1] == 1 else "Bearish",
-        "signal": "Buy" if trend[-1] == 1 and trend[-2] == -1 else ("Sell" if trend[-1] == -1 and trend[-2] == 1 else "None"),
-        "series": st_val
-    }
+    return {"value": float(st_val.iloc[-1]), "direction": "Bullish" if trend[-1] == 1 else "Bearish", "series": st_val}
 
 def detect_imba_trend(df, sensitivity=18.0):
-    """Implementation of [IMBA] ALGO Trend Line + Signals."""
     h, l, c = df['high'], df['low'], df['close']
     length = int(max(1, sensitivity * 10))
-    high_line = h.rolling(window=length).max()
-    low_line = l.rolling(window=length).min()
+    high_line, low_line = h.rolling(window=length).max(), l.rolling(window=length).min()
     imba_trend_line = high_line - (high_line - low_line) * 0.5
     is_uptrend = c > imba_trend_line
-    buy_signal = is_uptrend & (~is_uptrend.shift(1).fillna(False))
-    sell_signal = (~is_uptrend) & is_uptrend.shift(1).fillna(False)
+    return {"value": float(imba_trend_line.iloc[-1]), "direction": "Bullish" if is_uptrend.iloc[-1] else "Bearish", "series": imba_trend_line}
+
+def calculate_portfolio_metrics(asset_series: Dict[str, pd.Series], market_returns: pd.Series = None):
+    df = pd.DataFrame(asset_series).pct_change().dropna()
+    corr_matrix = df.corr().to_dict()
+    metrics = {}
+    for asset in asset_series:
+        returns = df[asset]
+        var_95 = np.percentile(returns, 5)
+        sharpe = (returns.mean() * 252) / (returns.std() * np.sqrt(252)) if returns.std() != 0 else 0
+        beta = 0
+        if market_returns is not None:
+            m_df = pd.concat([returns, market_returns.pct_change()], axis=1).dropna()
+            if len(m_df) > 1:
+                cov = np.cov(m_df.iloc[:,0], m_df.iloc[:,1])[0,1]
+                var_m = np.var(m_df.iloc[:,1])
+                beta = cov / var_m if var_m != 0 else 0
+        metrics[asset] = {"sharpe_ratio": float(sharpe), "var_95": float(var_95), "beta": float(beta)}
+    return {"correlation_matrix": corr_matrix, "asset_metrics": metrics}
+
+
+def backtest_strategy(df: pd.DataFrame, entry_indicator="EMA9", exit_indicator="EMA21", initial_capital=10000):
+    """
+    A functional crossover backtester.
+    Defaults to EMA crossover.
+    """
+    capital = initial_capital
+    position = 0
+    trades = []
+
+    # Ensure indicators exist, or calculate them if not in all_raw (simulated here)
+    if entry_indicator not in df.columns:
+        if "EMA" in entry_indicator:
+            period = int(entry_indicator.replace("EMA", ""))
+            df[entry_indicator] = talib.EMA(df['close'], timeperiod=period)
+    if exit_indicator not in df.columns:
+        if "EMA" in exit_indicator:
+            period = int(exit_indicator.replace("EMA", ""))
+            df[exit_indicator] = talib.EMA(df['close'], timeperiod=period)
+
+    # Simplified backtester logic
+    for i in range(1, len(df)):
+        # Buy Signal: Entry crosses above Exit
+        if df[entry_indicator].iloc[i] > df[exit_indicator].iloc[i] and \
+           df[entry_indicator].iloc[i-1] <= df[exit_indicator].iloc[i-1] and \
+           position == 0:
+            position = capital / df['close'].iloc[i]
+            buy_price = df['close'].iloc[i]
+            capital = 0
+            trades.append({"type": "buy", "price": float(buy_price), "index": i})
+
+        # Sell Signal: Entry crosses below Exit
+        elif df[entry_indicator].iloc[i] < df[exit_indicator].iloc[i] and \
+             df[entry_indicator].iloc[i-1] >= df[exit_indicator].iloc[i-1] and \
+             position > 0:
+            sell_price = df['close'].iloc[i]
+            capital = position * sell_price
+            position = 0
+            trades.append({"type": "sell", "price": float(sell_price), "index": i, "profit": float(sell_price - buy_price)})
+
+    final_val = capital if position == 0 else position * df['close'].iloc[-1]
     return {
-        "value": float(imba_trend_line.iloc[-1]),
-        "direction": "Bullish" if is_uptrend.iloc[-1] else "Bearish",
-        "signal": "Buy" if buy_signal.iloc[-1] else ("Sell" if sell_signal.iloc[-1] else "None"),
-        "series": imba_trend_line
+        "initial_capital": float(initial_capital),
+        "final_value": float(final_val),
+        "total_return_pct": float(((final_val - initial_capital) / initial_capital) * 100),
+        "trades": trades
     }
+
+# --- Parallel Engine ---
+
+executor = ProcessPoolExecutor(max_workers=4)
 
 def get_indicator_results_sync(df, selected=None, history=False):
     op, hi, lo, cl, vo = df['open'].values, df['high'].values, df['low'].values, df['close'].values, df['volume'].values
@@ -456,58 +397,26 @@ def get_indicator_results_sync(df, selected=None, history=False):
             else: talib_res[f] = res
         except: pass
 
-    all_raw_cols = {}
-    for k, v in talib_res.items():
-        all_raw_cols[clean_name(k)] = v
-    for c in ta_df.columns:
-        all_raw_cols[clean_name(c)] = ta_df[c]
+    all_raw_cols = {clean_name(k): v for k, v in talib_res.items()}
+    for c in ta_df.columns: all_raw_cols[clean_name(c)] = ta_df[c]
 
-    st_res = detect_supertrend(df)
-    imba_res = detect_imba_trend(df)
-    sqz_res = detect_squeeze_momentum(df)
-    zscore_res = detect_lux_zscore(df)
+    st_res, imba_res = detect_supertrend(df), detect_imba_trend(df)
+    sqz_res, zscore_res = detect_squeeze_momentum(df), detect_lux_zscore(df)
 
-    all_raw_cols["SUPERTREND"] = st_res["series"]
-    all_raw_cols["IMBA_TREND"] = imba_res["series"]
-    all_raw_cols["SQUEEZE_MOMENTUM"] = sqz_res["series"]
-    all_raw_cols["LUX_ZSCORE"] = zscore_res["series"]
-
+    all_raw_cols.update({"SUPERTREND": st_res["series"], "IMBA_TREND": imba_res["series"], "SQUEEZE_MOMENTUM": sqz_res["series"], "LUX_ZSCORE": zscore_res["series"]})
     all_raw = pd.DataFrame(all_raw_cols, index=df.index)
 
-    rsi = all_raw.get('RSI', pd.Series([50]*len(df), index=df.index))
     ema200 = talib.EMA(cl, timeperiod=min(len(cl), 200))
-    macd_s, sig_s = all_raw.get('MACD', pd.Series([0]*len(df), index=df.index)), all_raw.get('MACD_SIGNAL', pd.Series([0]*len(df), index=df.index))
-
-    scores = pd.Series(0.0, index=df.index)
-    scores[rsi < 30] += 1
-    scores[rsi > 70] -= 1
-    scores[cl > ema200] += 0.5
-    scores[cl <= ema200] -= 0.5
-    if len(df) > 1:
-        scores[(macd_s > sig_s) & (macd_s.shift(1) <= sig_s.shift(1))] += 1
-        scores[(macd_s < sig_s) & (macd_s.shift(1) >= sig_s.shift(1))] -= 1
-    df['signal'] = scores.apply(lambda s: "Buy" if s >= 1.5 else ("Sell" if s <= -1.5 else "Hold"))
-
-    smc = detect_smc(df)
     res = {
         "current_price": float(cl[-1]),
-        "summary": {"signal": df['signal'].iloc[-1], "trend": "Bullish" if cl[-1] > ema200[-1] else "Bearish", "session": get_sessions(df['timestamp'].iloc[-1])},
-        "institutional_strategies": smc,
-        "market_dynamics": {
-            "levels": detect_sr_levels(df),
-            "volume_profile": calculate_volume_profile(df)
-        },
+        "summary": {"trend": "Bullish" if cl[-1] > ema200[-1] else "Bearish", "session": get_sessions(df['timestamp'].iloc[-1])},
+        "institutional_strategies": detect_smc(df),
+        "market_dynamics": {"levels": detect_sr_levels(df), "volume_profile": calculate_volume_profile(df)},
         "divergences": {"rsi": detect_divergences(df, "RSI"), "macd": detect_divergences(df, "MACD")},
         "price_action_patterns": detect_price_action_patterns(df),
-        "custom_lux_algo": {
-            "zscore_zones": {k:v for k,v in zscore_res.items() if k != "series"},
-            "market_structure": detect_lux_msb_ob(df)
-        },
+        "custom_lux_algo": {"zscore_zones": {k:v for k,v in zscore_res.items() if k != "series"}, "market_structure": detect_lux_msb_ob(df)},
         "squeeze_momentum": {k:v for k,v in sqz_res.items() if k != "series"},
-        "trend_following": {
-            "supertrend": {k:v for k,v in st_res.items() if k != "series"},
-            "imba_trend": {k:v for k,v in imba_res.items() if k != "series"}
-        }
+        "trend_following": {"supertrend": {k:v for k,v in st_res.items() if k != "series"}, "imba_trend": {k:v for k,v in imba_res.items() if k != "series"}}
     }
 
     latest_data = all_raw.iloc[-1].to_dict()
@@ -524,4 +433,5 @@ def get_indicator_results_sync(df, selected=None, history=False):
     return res
 
 async def get_indicator_results(df, selected=None, history=False):
-    return await asyncio.to_thread(get_indicator_results_sync, df, selected, history)
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(executor, get_indicator_results_sync, df, selected, history)

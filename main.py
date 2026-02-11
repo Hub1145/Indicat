@@ -1,45 +1,34 @@
 import pandas as pd
 import numpy as np
 import talib
-import ccxt
 from binance.um_futures import UMFutures
 from binance.error import ClientError
 import yfinance as yf
 import asyncio
 import os
 import io
+import orjson
 from datetime import datetime
 from typing import List, Optional, Literal, Dict, Any
-from fastapi import FastAPI, HTTPException, Depends, Header, Query
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, HTTPException, Depends, Header, Query, Request, Response
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, Field
 import diskcache
-import json
+import redis.asyncio as redis
+from fastapi_limiter import FastAPILimiter
+from fastapi_limiter.depends import RateLimiter
+from sqlalchemy.future import select
 
 # Import refactored logic
 from lib.indicators import (
     INDICATOR_METADATA,
     clean_dict,
     get_indicator_results,
-    get_indicator_results_sync
+    calculate_portfolio_metrics
 )
-
-app = FastAPI(title="Pro-Trader Ultimate TA-as-a-Service API")
-
-# --- Monetization & Security ---
-RAPIDAPI_SECRET = os.getenv("RAPIDAPI_PROXY_SECRET", "dev_secret")
-
-async def verify_rapidapi_key(x_rapidapi_proxy_secret: str = Header(None)):
-    if RAPIDAPI_SECRET == "dev_secret": return True
-    if x_rapidapi_proxy_secret != RAPIDAPI_SECRET:
-        raise HTTPException(status_code=403, detail="Unauthorized access. Invalid API Key.")
-    return True
-
-# --- Caching ---
-cache = diskcache.Cache("./cache")
-
-# --- Binance Client ---
-binance_client = UMFutures()
+from lib.database import init_db, get_db, APIRequest, User, Alert
+from lib.auth import get_current_user, get_tier_limit
 
 # --- Models ---
 
@@ -52,7 +41,7 @@ class Candle(BaseModel):
     volume: float
 
 class UploadRequest(BaseModel):
-    data: List[Candle] = Field(..., description="List of OHLCV candles")
+    data: List[Candle]
     indicators: Optional[List[str]] = None
     include_history: bool = False
 
@@ -60,9 +49,9 @@ class MarketRequest(BaseModel):
     provider: Literal["crypto", "stock", "forex"]
     symbol: str
     timeframe: Literal["15m", "1h", "4h", "1d"]
-    exchange: Optional[str] = "binance"
     indicators: Optional[List[str]] = None
     include_history: bool = False
+    exchange: Optional[str] = "binance"
 
 class MTFRequest(BaseModel):
     provider: Literal["crypto", "stock", "forex"]
@@ -89,45 +78,81 @@ class OptionsRequest(BaseModel):
     risk_free_rate: float = 0.05
     option_type: Literal["call", "put"] = "call"
 
-# --- Data Fetching Helpers ---
+class PortfolioRequest(BaseModel):
+    assets: List[str]
+    provider: Literal["crypto", "stock", "forex"] = "crypto"
+
+class AlertRequest(BaseModel):
+    symbol: str
+    condition: Dict[str, Any]
+    webhook_url: str
+
+class BacktestRequest(BaseModel):
+    symbol: str
+    strategy: Dict[str, Any]
+    period: str = "1y"
+
+# --- App Setup ---
+
+app = FastAPI(title="Pro-Trader Ultimate TA-as-a-Service API")
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+class CustomORJSONResponse(JSONResponse):
+    def render(self, content: Any) -> bytes:
+        return orjson.dumps(content, option=orjson.OPT_NON_STR_KEYS | orjson.OPT_SERIALIZE_NUMPY)
+
+@app.middleware("http")
+async def error_handling_middleware(request: Request, call_next):
+    try:
+        return await call_next(request)
+    except Exception as e:
+        return CustomORJSONResponse(status_code=500, content={"error": {"message": str(e)}})
+
+@app.on_event("startup")
+async def startup():
+    await init_db()
+    try:
+        r = redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"), encoding="utf-8", decode_responses=True)
+        await FastAPILimiter.init(r)
+    except:
+        print("Redis connection failed. Rate limiting might be disabled.")
+
+cache = diskcache.Cache("./cache")
+binance_client = UMFutures()
+
+# --- Helpers ---
+
+async def tiered_rate_limit(request: Request, response: Response, user: User = Depends(get_current_user)):
+    limit = get_tier_limit(user.tier)
+    try:
+        limiter = RateLimiter(times=limit["rpm"], seconds=60, identifier=lambda r: user.id)
+        await limiter(request, response)
+    except: pass # Bypass if redis fails
 
 async def fetch_data_binance(symbol, timeframe, limit=500):
-    """Fetches OHLCV from Binance UMFutures."""
     try:
         s = symbol.upper().replace("/", "")
         if s.endswith("USD"): s = s.replace("USD", "USDT")
         if not (s.endswith("USDT") or s.endswith("BUSD")): s += "USDT"
-
         resp = await asyncio.to_thread(binance_client.klines, s, timeframe, limit=limit)
-        if not resp:
-            raise HTTPException(status_code=404, detail=f"No data found for {s}")
-
         df = pd.DataFrame(resp).iloc[:, :6]
         df.columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
-        df = df.astype(float)
-        return df
-    except ClientError as error:
-        raise HTTPException(status_code=500, detail=f"Binance Error: {error.error_message}")
+        return df.astype(float)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Data Fetch Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Binance Error: {str(e)}")
 
-async def fetch_data(provider, symbol, tf, ex_id="binance"):
+async def fetch_data(provider, symbol, tf):
     fetch_limit = 500
-    cache_key = f"data_{provider}_{symbol}_{tf}_{ex_id}_{fetch_limit}"
+    cache_key = f"data_{provider}_{symbol}_{tf}"
     cached = cache.get(cache_key)
     if cached is not None: return pd.read_json(io.StringIO(cached))
 
     if provider == "crypto":
-        try:
-            df = await fetch_data_binance(symbol, tf, limit=fetch_limit)
-        except Exception as e:
-            ex = ccxt.kraken()
-            s = symbol if "/" in symbol else f"{symbol}/USDT"
-            ohlcv = await asyncio.to_thread(ex.fetch_ohlcv, s, timeframe=tf, limit=fetch_limit)
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df = await fetch_data_binance(symbol, tf, limit=fetch_limit)
     else:
         mapping = {"15m": "15m", "1h": "1h", "4h": "1h", "1d": "1d"}
-        data = await asyncio.to_thread(yf.download, symbol if provider == "stock" else f"{symbol}=X", period="2y", interval=mapping[tf], progress=False)
+        s = symbol if provider == "stock" else f"{symbol}=X"
+        data = await asyncio.to_thread(yf.download, s, period="2y", interval=mapping[tf], progress=False)
         if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
         if tf == "4h": data = data.resample('4h').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last', 'Volume':'sum'}).dropna()
         df = data.tail(fetch_limit).reset_index()
@@ -137,58 +162,37 @@ async def fetch_data(provider, symbol, tf, ex_id="binance"):
     cache.set(cache_key, df.to_json(), expire=60)
     return df
 
-# --- Endpoints ---
+# --- Routes ---
+
+@app.get("/health")
+async def health():
+    return {"status": "healthy", "timestamp": datetime.utcnow()}
 
 @app.get("/indicators")
 async def list_indicators():
-    ti, cp = INDICATOR_METADATA["technical_indicators"].copy(), INDICATOR_METADATA["candlestick_patterns"].copy()
-    for f in talib.get_functions():
-        if f.startswith("CDL"):
-            if f not in cp: cp[f] = f.replace("CDL", "").replace("_", " ").title()
-        elif f not in ti: ti[f] = f.replace("_", " ").title()
-    def fmt(d): return [{"code": k, "full_name": v} for k, v in sorted(d.items())]
-    return {
-        "technical_indicators": fmt(ti),
-        "candlestick_patterns": fmt(cp),
-        "institutional_strategies": fmt(INDICATOR_METADATA["institutional_strategies"]),
-        "price_action_patterns": fmt(INDICATOR_METADATA["price_action_patterns"]),
-        "market_dynamics": fmt(INDICATOR_METADATA["market_dynamics"]),
-        "custom_lux_algo": fmt(INDICATOR_METADATA["custom_lux_algo"]),
-        "squeeze_momentum": fmt(INDICATOR_METADATA["squeeze_momentum"]),
-        "trend_following": fmt(INDICATOR_METADATA["trend_following"])
-    }
+    return clean_dict({k: [{"code": c, "name": n} for c, n in v.items()] for k, v in INDICATOR_METADATA.items()})
 
-@app.post("/analyze/market", dependencies=[Depends(verify_rapidapi_key)])
-async def analyze_market(req: MarketRequest):
-    cache_key = f"analysis_{req.provider}_{req.symbol}_{req.timeframe}_{req.exchange}_{req.indicators}_{req.include_history}"
-    cached = cache.get(cache_key)
-    if cached: return cached
-
-    df = await fetch_data(req.provider, req.symbol, req.timeframe, req.exchange)
-    if len(df) < 30:
-        raise HTTPException(status_code=400, detail="Not enough data points fetched. Minimum 30 required.")
-
+@app.post("/analyze/market", response_class=CustomORJSONResponse, dependencies=[Depends(tiered_rate_limit)])
+async def analyze_market(req: MarketRequest, user: User = Depends(get_current_user)):
+    df = await fetch_data(req.provider, req.symbol, req.timeframe)
+    if len(df) < 30: raise HTTPException(status_code=400, detail="Insufficient data.")
     res = clean_dict(await get_indicator_results(df, req.indicators, req.include_history))
-    cache.set(cache_key, res, expire=60)
     return res
 
-@app.post("/analyze/upload", dependencies=[Depends(verify_rapidapi_key)])
+@app.post("/analyze/upload", dependencies=[Depends(get_current_user)])
 async def analyze_upload(req: UploadRequest):
-    if len(req.data) < 30:
-        raise HTTPException(status_code=400, detail="Not enough candles. Minimum 30 required.")
+    if len(req.data) < 30: raise HTTPException(status_code=400, detail="Minimum 30 candles.")
     df = pd.DataFrame([c.model_dump() for c in req.data[-2000:]])
     return clean_dict(await get_indicator_results(df, req.indicators, req.include_history))
 
-@app.post("/analyze/mtf", dependencies=[Depends(verify_rapidapi_key)])
+@app.post("/analyze/mtf", dependencies=[Depends(get_current_user)])
 async def analyze_mtf(req: MTFRequest):
-    tasks = [fetch_data(req.provider, req.symbol, tf, req.exchange) for tf in req.timeframes]
+    tasks = [fetch_data(req.provider, req.symbol, tf) for tf in req.timeframes]
     dfs = await asyncio.gather(*tasks)
-    results = {}
-    for tf, df in zip(req.timeframes, dfs):
-        results[tf] = await get_indicator_results(df, req.indicators)
+    results = {tf: await get_indicator_results(df, req.indicators) for tf, df in zip(req.timeframes, dfs)}
     return clean_dict({"symbol": req.symbol, "timeframes": results})
 
-@app.post("/analyze/correlation", dependencies=[Depends(verify_rapidapi_key)])
+@app.post("/analyze/correlation", dependencies=[Depends(get_current_user)])
 async def analyze_correlation(req: CorrelationRequest):
     series = {}
     for asset in req.assets:
@@ -199,7 +203,7 @@ async def analyze_correlation(req: CorrelationRequest):
     if not series: raise HTTPException(status_code=400, detail="Could not fetch data.")
     return clean_dict(pd.DataFrame(series).corr().to_dict())
 
-@app.post("/analyze/heatmap", dependencies=[Depends(verify_rapidapi_key)])
+@app.post("/analyze/heatmap", dependencies=[Depends(get_current_user)])
 async def analyze_heatmap(req: HeatmapRequest):
     async def get_m(a):
         try:
@@ -210,34 +214,28 @@ async def analyze_heatmap(req: HeatmapRequest):
     res = await asyncio.gather(*[get_m(a) for a in req.assets])
     return clean_dict(dict(res))
 
-@app.post("/confluence-score", dependencies=[Depends(verify_rapidapi_key)])
+@app.post("/confluence-score", dependencies=[Depends(get_current_user)])
 async def confluence(req: MarketRequest):
-    df = await fetch_data(req.provider, req.symbol, req.timeframe, req.exchange)
+    df = await fetch_data(req.provider, req.symbol, req.timeframe)
     a = await get_indicator_results(df)
     score = 0
-    if a['summary']['signal'] == "Buy": score += 40
-    elif a['summary']['signal'] == "Sell": score -= 40
-    score += 20 if a['summary']['trend'] == "Bullish" else -20
-
-    struct = a['institutional_strategies']['structure']
-    if "Bullish" in struct['swing']: score += 20
-    elif "Bearish" in struct['swing']: score -= 20
-
-    if "Bullish" in struct['internal']: score += 10
-    elif "Bearish" in struct['internal']: score -= 10
-
+    if a['summary']['trend'] == "Bullish": score += 20
+    else: score -= 20
+    # Simplified score based on summary signal
+    if a.get('institutional_strategies', {}).get('structure', {}).get('swing', '').startswith('Bullish'): score += 30
+    elif a.get('institutional_strategies', {}).get('structure', {}).get('swing', '').startswith('Bearish'): score -= 30
     score = max(-100, min(100, score))
-    return clean_dict({"symbol": req.symbol, "score": score, "sentiment": "Strong Buy" if score > 50 else "Buy" if score > 10 else "Strong Sell" if score < -50 else "Sell" if score < -10 else "Neutral"})
+    return {"symbol": req.symbol, "score": score, "sentiment": "Strong Buy" if score > 50 else "Buy" if score > 10 else "Strong Sell" if score < -50 else "Sell" if score < -10 else "Neutral"}
 
-@app.post("/is-trend-bullish", dependencies=[Depends(verify_rapidapi_key)])
+@app.post("/is-trend-bullish", dependencies=[Depends(get_current_user)])
 async def is_bullish(req: MarketRequest):
-    df = await fetch_data(req.provider, req.symbol, req.timeframe, req.exchange)
+    df = await fetch_data(req.provider, req.symbol, req.timeframe)
     ema200 = talib.EMA(df['close'].values, timeperiod=min(len(df), 200))[-1]
     return {"bullish": bool(df['close'].iloc[-1] > ema200)}
 
-@app.post("/scan-patterns", dependencies=[Depends(verify_rapidapi_key)])
+@app.post("/scan-patterns", dependencies=[Depends(get_current_user)])
 async def scan(req: MarketRequest):
-    df = await fetch_data(req.provider, req.symbol, req.timeframe, req.exchange)
+    df = await fetch_data(req.provider, req.symbol, req.timeframe)
     op, hi, lo, cl = df['open'].values, df['high'].values, df['low'].values, df['close'].values
     found = []
     for f in [f for f in talib.get_functions() if f.startswith('CDL')]:
@@ -253,186 +251,73 @@ async def greeks(req: OptionsRequest):
     if T <= 0: T = 1e-5
     S, K, r, sigma = req.underlying_price, req.strike, req.risk_free_rate, req.volatility
     d1 = (np.log(S/K) + (r + 0.5*sigma**2)*T) / (sigma*np.sqrt(T))
-    d2 = d1 - sigma*np.sqrt(T)
     delta = norm.cdf(d1) if req.option_type == "call" else norm.cdf(d1)-1
-    return clean_dict({"delta": delta, "gamma": norm.pdf(d1) / (S*sigma*np.sqrt(T))})
+    return {"delta": float(delta)}
+
+@app.post("/portfolio/analyze")
+async def analyze_portfolio(req: PortfolioRequest):
+    series = {a: (await fetch_data(req.provider, a, "1d"))['close'] for a in req.assets}
+    return clean_dict(calculate_portfolio_metrics(series))
+
+@app.post("/backtest", dependencies=[Depends(get_current_user)])
+async def backtest(req: BacktestRequest):
+    df = await fetch_data("crypto", req.symbol, "1d")
+    from lib.indicators import backtest_strategy
+    res = backtest_strategy(df)
+    return {"symbol": req.symbol, "results": res}
+
+@app.post("/alerts/create")
+async def create_alert(req: AlertRequest, user: User = Depends(get_current_user), db=Depends(get_db)):
+    alert = Alert(user_id=user.id, symbol=req.symbol, condition=req.condition, webhook_url=req.webhook_url)
+    db.add(alert); await db.commit()
+    return {"id": alert.id}
 
 @app.get("/analyze/chart", response_class=HTMLResponse)
-async def get_chart(
-    provider: Literal["crypto", "stock", "forex"] = "crypto",
-    symbol: str = "BTC/USD",
-    timeframe: Literal["15m", "1h", "4h", "1d"] = "1d",
-    exchange: str = "kraken",
-    indicators: Optional[List[str]] = Query(None)
-):
-    if not indicators:
-        indicators = ["EMA20", "EMA50", "EMA200", "RSI", "MACD", "SUPERTREND", "IMBA_TREND", "SQUEEZE_MOMENTUM"]
-
-    category_map = {
-        "SMC": ["SUPERTREND", "IMBA_TREND", "SQUEEZE_MOMENTUM", "LUX_ZSCORE"],
-        "LUX": ["LUX_ZSCORE"],
-        "TREND": ["SUPERTREND", "IMBA_TREND"],
-        "SQUEEZE": ["SQUEEZE_MOMENTUM"]
-    }
-    target_indicators = [i.upper() for i in indicators]
-    for ind in indicators:
-        if ind.upper() in category_map:
-            target_indicators.extend(category_map[ind.upper()])
-
-    df = await fetch_data(provider, symbol, timeframe, exchange)
-    analysis = await get_indicator_results(df, indicators, history=True)
-    chart_data = analysis["history"][-200:]
-
-    idx_to_time = {}
-    for i, row in df.iterrows():
-        ts = row["timestamp"]
-        if isinstance(ts, (int, float, np.integer)): t = int(ts/1000)
-        else: t = int(pd.to_datetime(ts).timestamp())
-        idx_to_time[i] = t
-
-    candles, indicator_series, markers = [], {}, []
-    smc = analysis.get("institutional_strategies", {})
-    price_patterns = analysis.get("price_action_patterns", [])
-    dynamics = analysis.get("market_dynamics", {})
-
-    for p in price_patterns:
-        if p.get("index") in idx_to_time:
-            markers.append({"time": idx_to_time[p["index"]], "position": "aboveBar", "color": "#f23645", "shape": "arrowDown", "text": p["pattern"]})
-
-    for ob in smc.get("order_blocks", []):
-        if ob.get("index") in idx_to_time:
-            markers.append({"time": idx_to_time[ob["index"]], "position": "belowBar", "color": "#2158f3", "shape": "square", "text": "OB"})
-
-    for fvg in smc.get("fair_value_gaps", []):
-        if fvg.get("index") in idx_to_time:
-            markers.append({"time": idx_to_time[fvg["index"]], "position": "belowBar", "color": "#00ff68", "shape": "circle", "text": "FVG"})
-
-    price_avg = np.mean([r["close"] for r in chart_data])
-
-    for row in chart_data:
-        ts = row["timestamp"]
-        if isinstance(ts, (int, float)): t = int(ts/1000)
-        else: t = int(datetime.fromisoformat(str(ts).replace('Z', '+00:00')).timestamp())
-
-        candles.append({"time": t, "open": row["open"], "high": row["high"], "low": row["low"], "close": row["close"]})
-
-        for k, v in row.items():
+async def get_chart(provider: str = "crypto", symbol: str = "BTC/USDT", timeframe: str = "1d", indicators: Optional[str] = Query(None)):
+    ind_list = indicators.split(",") if indicators else None
+    df = await fetch_data(provider, symbol, timeframe)
+    analysis = await get_indicator_results(df, ind_list, history=True)
+    h = analysis["history"][-200:]
+    def to_t(ts): return int(ts/1000) if isinstance(ts, (int, float)) else int(pd.to_datetime(ts).timestamp())
+    candles = [{"time": to_t(r["timestamp"]), "open": r["open"], "high": r["high"], "low": r["low"], "close": r["close"]} for r in h]
+    indicator_series = {}
+    for r in h:
+        t = to_t(r["timestamp"])
+        for k, v in r.items():
             if k in ["open", "high", "low", "close", "volume", "timestamp", "signal"]: continue
             if not isinstance(v, (int, float, np.number)): continue
-
-            if k.startswith("CDL"):
-                if v != 0:
-                    markers.append({
-                        "time": t,
-                        "position": "aboveBar" if v < 0 else "belowBar",
-                        "color": "#e91e63" if v < 0 else "#9c27b0",
-                        "shape": "arrowDown" if v < 0 else "arrowUp",
-                        "text": k[3:]
-                    })
-                continue
-
-            if k.upper() not in target_indicators: continue
             if k not in indicator_series: indicator_series[k] = []
             indicator_series[k].append({"time": t, "value": float(v)})
 
-    sr_levels = dynamics.get("levels", [])
-    js_logic = """
-            const chartWidth = 1000;
-            const mainChart = LightweightCharts.createChart(document.getElementById('main-chart'), {
-                width: chartWidth, height: 500,
-                layout: { backgroundColor: '#131722', textColor: '#d1d4dc' },
-                grid: { vertLines: { color: '#1e222d' }, horzLines: { color: '#1e222d' } },
-                timeScale: { borderColor: '#485c7b', timeVisible: true }
-            });
+    html = """<html><head><script src="https://unpkg.com/lightweight-charts@4.0.0/dist/lightweight-charts.standalone.production.js"></script></head>
+    <body style="background:#131722;color:white"><h2>"""+symbol+"""</h2><div id="c" style="width:1000px;height:600px"></div><div id="oscillators"></div><script>
+    const chart = LightweightCharts.createChart(document.getElementById('c'), {width:1000, height:600, layout:{background:{color:'#131722'},textColor:'#d1d4dc'}});
+    const cs = chart.addCandlestickSeries(); cs.setData("""+orjson.dumps(candles).decode()+""");
+    const indData = """+orjson.dumps(indicator_series).decode()+""";
+    const requested = """ + orjson.dumps(ind_list).decode() + """;
+    Object.keys(indData).forEach(k => {
+        if (requested && !requested.includes(k) && !k.toUpperCase().includes("EMA") && !k.toUpperCase().includes("SMA")) return;
+        const data = indData[k];
+        if (!data || data.length === 0) return;
+        const valAvg = data.reduce((a,b) => a + (b.value || 0), 0) / data.length;
+        const price = candles[candles.length - 1].close;
+        const isOverlay = Math.abs(valAvg - price) / price < 0.5;
 
-            const candleSeries = mainChart.addCandlestickSeries({
-                upColor: '#089981', downColor: '#f23645', borderVisible: false,
-                wickUpColor: '#089981', wickDownColor: '#f23645'
-            });
-
-            candleSeries.setData(candles);
-            candleSeries.setMarkers(markers);
-
-            srLevels.forEach(lv => {
-                candleSeries.createPriceLine({
-                    price: lv.price, color: lv.type === 'Resistance' ? '#f23645' : '#089981',
-                    lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: lv.type
-                });
-            });
-
-            const oscCharts = [];
-            Object.keys(indicatorSeriesData).forEach(name => {
-                const data = indicatorSeriesData[name];
-                if (data.length === 0) return;
-                const valAvg = data.reduce((a,b) => a + b.value, 0) / data.length;
-                const color = '#' + (Math.random().toString(16) + '000000').substring(2,8);
-                const isOverlay = Math.abs(valAvg - priceAvg) / priceAvg < 0.5 ||
-                              ["UPPER", "LOWER", "MID", "STOP", "TREND", "IMBA", "BANDS", "EMA", "SMA", "VWAP"].some(k => name.toUpperCase().includes(k));
-
-                if (isOverlay) {
-                    const line = mainChart.addLineSeries({ title: name, lineWidth: 1, color: color });
-                    line.setData(data);
-                } else {
-                    const container = document.createElement('div');
-                    container.className = 'osc-container';
-                    document.getElementById('oscillators').appendChild(container);
-                    const oscChart = LightweightCharts.createChart(container, {
-                        width: chartWidth, height: 150,
-                        layout: { backgroundColor: '#131722', textColor: '#d1d4dc' },
-                        grid: { vertLines: { color: '#1e222d' }, horzLines: { color: '#1e222d' } },
-                        timeScale: { visible: false }
-                    });
-                    if (name.includes('HIST') || name.includes('MOMENTUM')) {
-                        const hist = oscChart.addHistogramSeries({ title: name, color: color, priceFormat: { type: 'volume' } });
-                        hist.setData(data.map(d => ({ ...d, color: d.value >= 0 ? '#26a69a' : '#ef5350' })));
-                    } else {
-                        const line = oscChart.addLineSeries({ title: name, lineWidth: 1, color: color });
-                        line.setData(data);
-                    }
-                    oscCharts.push(oscChart);
-                }
-            });
-            mainChart.timeScale().subscribeVisibleTimeRangeChange(range => {
-                oscCharts.forEach(c => c.timeScale().setVisibleRange(range));
-            });
-    """
-
-    html_template = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>SYMBOL_PLACEHOLDER - TA Visualizer</title>
-        <script src="https://unpkg.com/lightweight-charts@4.0.0/dist/lightweight-charts.standalone.production.js"></script>
-        <style>
-            body { margin: 0; padding: 20px; background: #131722; color: white; font-family: sans-serif; }
-            .chart-container { width: 100%; height: 500px; margin-bottom: 10px; }
-            .osc-container { width: 100%; height: 150px; margin-bottom: 10px; }
-            .controls { margin-bottom: 10px; border-bottom: 1px solid #2B2B43; padding-bottom: 10px; }
-        </style>
-    </head>
-    <body>
-        <div class="controls">
-            <h2 style="margin:0;">SYMBOL_PLACEHOLDER (TIMEFRAME_PLACEHOLDER)</h2>
-            <p style="color: #878b94; margin: 5px 0;">TA-as-a-Service Visualizer • Multi-Pane Layout</p>
-        </div>
-        <div id="main-chart" style="width: 100%; height: 500px;"></div>
-        <div id="oscillators"></div>
-        <script>
-            window.addEventListener('DOMContentLoaded', () => {
-                const candles = """ + json.dumps(candles) + """;
-                const indicatorSeriesData = """ + json.dumps(indicator_series) + """;
-                const markers = """ + json.dumps(markers) + """;
-                const srLevels = """ + json.dumps(sr_levels) + """;
-                const priceAvg = """ + str(price_avg) + """;
-                """ + js_logic + """
-            });
-        </script>
-    </body>
-    </html>
-    """
-
-    html_content = html_template.replace("SYMBOL_PLACEHOLDER", symbol).replace("TIMEFRAME_PLACEHOLDER", timeframe)
-    return html_content
+        if (isOverlay) {
+            const s = chart.addLineSeries({title:k, color: '#' + Math.floor(Math.random()*16777215).toString(16), lineWidth: 2});
+            s.setData(data.filter(d => d.value !== null && !isNaN(d.value)));
+        } else {
+            const container = document.createElement('div');
+            container.style.width = '1000px'; container.style.height = '150px';
+            container.style.border = '1px solid #2B2B43';
+            document.getElementById('oscillators').appendChild(container);
+            const oscChart = LightweightCharts.createChart(container, {width:1000, height:150, layout:{background:{color:'#131722'},textColor:'#d1d4dc'}, grid:{vertLines:{visible:false},horzLines:{visible:false}}});
+            const s = oscChart.addLineSeries({title:k, color: '#2962FF'});
+            s.setData(data.filter(d => d.value !== null && !isNaN(d.value)));
+        }
+    });
+    </script></body></html>"""
+    return html
 
 if __name__ == "__main__":
     import uvicorn
