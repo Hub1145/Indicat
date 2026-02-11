@@ -47,7 +47,8 @@ INDICATOR_METADATA = {
         "Liquidity": "Buy Side & Sell Side Liquidity Pools",
         "Volume_Profile": "Price Distribution Analysis",
         "VWAP_Volume_Profile": "VWAP Volume Profile [BigBeluga]",
-        "MTF_MACD_Forecast": "MTF MACD Strategy with Forecasting"
+        "MTF_MACD_Forecast": "MTF MACD Strategy with Forecasting",
+        "UT_BOT_ALERTS": "UT Bot Alerts [QuantNomad]"
     },
     "custom_lux_algo": {
         "ZScore_Zones": "Z-Score Predictive Zones [AlgoPoint]",
@@ -374,6 +375,59 @@ def calculate_vwap_volume_profile(df: pd.DataFrame, period=250, bins=50):
         "neg_poc": profile[neg_poc_idx]
     }
 
+def detect_ut_bot_alerts(df: pd.DataFrame, sensitivity=1.0, atr_period=10):
+    """
+    UT Bot Alerts
+    Ported from PineScript v4
+    """
+    if len(df) < atr_period + 1: return None
+
+    c = df['close'].values
+    h = df['high'].values
+    l = df['low'].values
+
+    atr = talib.ATR(h, l, c, timeperiod=atr_period)
+    n_loss = sensitivity * atr
+
+    trailing_stop = np.zeros(len(df))
+    # Initialize first valid index
+    first_valid = 0
+    for i in range(len(df)):
+        if not np.isnan(n_loss[i]):
+            first_valid = i
+            trailing_stop[i] = c[i]
+            break
+
+    for i in range(first_valid + 1, len(df)):
+        prev_ts = trailing_stop[i-1]
+
+        if c[i] > prev_ts and c[i-1] > prev_ts:
+            trailing_stop[i] = max(prev_ts, c[i] - n_loss[i])
+        elif c[i] < prev_ts and c[i-1] < prev_ts:
+            trailing_stop[i] = min(prev_ts, c[i] + n_loss[i])
+        elif c[i] > prev_ts:
+            trailing_stop[i] = c[i] - n_loss[i]
+        else:
+            trailing_stop[i] = c[i] + n_loss[i]
+
+    ema = c # PineScript ema(src, 1) is just src
+    ts_series = pd.Series(trailing_stop)
+    ema_series = pd.Series(ema)
+
+    # PineScript crossover(a, b) -> a[1] <= b[1] and a > b
+    crossover_up = (ema_series > ts_series) & (ema_series.shift(1) <= ts_series.shift(1))
+    crossover_down = (ts_series > ema_series) & (ts_series.shift(1) <= ema_series.shift(1))
+
+    buy = (ema_series > ts_series) & crossover_up
+    sell = (ema_series < ts_series) & crossover_down
+
+    return {
+        "buy": bool(buy.iloc[-1]),
+        "sell": bool(sell.iloc[-1]),
+        "trailing_stop": float(trailing_stop[-1]),
+        "series": pd.Series(trailing_stop, index=df.index)
+    }
+
 def calculate_mtf_macd_forecast(df: pd.DataFrame, fast=12, slow=26, sig=9, htf="4h", forecast_len=30):
     """
     MTF MACD Strategy with Forecasting
@@ -649,8 +703,15 @@ def get_indicator_results_sync(df, selected=None, history=False):
 
     st_res, imba_res = detect_supertrend(df), detect_imba_trend(df)
     sqz_res, zscore_res = detect_squeeze_momentum(df), detect_lux_zscore(df)
+    ut_res = detect_ut_bot_alerts(df)
 
-    all_raw_cols.update({"SUPERTREND": st_res["series"], "IMBA_TREND": imba_res["series"], "SQUEEZE_MOMENTUM": sqz_res["series"], "LUX_ZSCORE": zscore_res["series"]})
+    all_raw_cols.update({
+        "SUPERTREND": st_res["series"],
+        "IMBA_TREND": imba_res["series"],
+        "SQUEEZE_MOMENTUM": sqz_res["series"],
+        "LUX_ZSCORE": zscore_res["series"],
+        "UT_BOT_TS": ut_res["series"] if ut_res else None
+    })
     all_raw = pd.DataFrame(all_raw_cols, index=df.index)
 
     ema200 = talib.EMA(cl, timeperiod=min(len(cl), 200))
@@ -662,7 +723,8 @@ def get_indicator_results_sync(df, selected=None, history=False):
             "levels": detect_sr_levels(df),
             "volume_profile": calculate_volume_profile(df),
             "vwap_volume_profile": calculate_vwap_volume_profile(df),
-            "mtf_macd_forecast": calculate_mtf_macd_forecast(df)
+            "mtf_macd_forecast": calculate_mtf_macd_forecast(df),
+            "ut_bot_alerts": detect_ut_bot_alerts(df)
         },
         "divergences": {"rsi": detect_divergences(df, "RSI"), "macd": detect_divergences(df, "MACD")},
         "price_action_patterns": detect_price_action_patterns(df),
