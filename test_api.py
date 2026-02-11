@@ -25,6 +25,7 @@ def test_endpoints():
     r = requests.post(f"{BASE_URL}/analyze/market", json=payload, headers=HEADERS)
     t1 = time.time() - start
     print(f"Status: {r.status_code}, Current Price: {r.json().get('current_price')}, Time: {t1:.2f}s")
+    if r.status_code != 200: print(f"Error: {r.json()}")
 
     # Test Caching
     start = time.time()

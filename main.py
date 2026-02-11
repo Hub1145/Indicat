@@ -222,8 +222,9 @@ async def confluence(req: MarketRequest):
     if a['summary']['trend'] == "Bullish": score += 20
     else: score -= 20
     # Simplified score based on summary signal
-    if a.get('institutional_strategies', {}).get('structure', {}).get('swing', '').startswith('Bullish'): score += 30
-    elif a.get('institutional_strategies', {}).get('structure', {}).get('swing', '').startswith('Bearish'): score -= 30
+    ms = a.get('institutional_strategies', {}).get('market_structure', {})
+    if ms.get('mss', '').startswith('Bullish') or ms.get('bos', '').startswith('Bullish'): score += 30
+    elif ms.get('mss', '').startswith('Bearish') or ms.get('bos', '').startswith('Bearish'): score -= 30
     score = max(-100, min(100, score))
     return {"symbol": req.symbol, "score": score, "sentiment": "Strong Buy" if score > 50 else "Buy" if score > 10 else "Strong Sell" if score < -50 else "Sell" if score < -10 else "Neutral"}
 
