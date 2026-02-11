@@ -45,7 +45,8 @@ INDICATOR_METADATA = {
         "Sessions": "Global Market Hours (Tokyo/London/NY)",
         "SR_Levels": "Horizontal Support & Resistance Levels",
         "Liquidity": "Buy Side & Sell Side Liquidity Pools",
-        "Volume_Profile": "Price Distribution Analysis"
+        "Volume_Profile": "Price Distribution Analysis",
+        "VWAP_Volume_Profile": "VWAP Volume Profile [BigBeluga]"
     },
     "custom_lux_algo": {
         "ZScore_Zones": "Z-Score Predictive Zones [AlgoPoint]",
@@ -212,6 +213,60 @@ def calculate_volume_profile(df: pd.DataFrame):
     counts, edges = np.histogram(df['close'], bins=bins, weights=df['volume'])
     idx = np.argmax(counts)
     return {"poc": float(edges[idx]), "vah": float(edges[min(idx+2, bins-1)]), "val": float(edges[max(idx-2, 0)])}
+
+def calculate_vwap_volume_profile(df: pd.DataFrame, period=250, bins=50):
+    """
+    VWAP Volume Profile [BigBeluga]
+    Ported from PineScript v6
+    """
+    if len(df) < 5: return None
+
+    p = min(period, len(df))
+    # Calculate VWAP of close
+    df = df.copy()
+    df['vwap'] = (df['close'] * df['volume']).cumsum() / df['volume'].cumsum()
+
+    # Signed volume logic
+    # volume_ = src > src[2] ? vol : -vol
+    df['vol_signed'] = np.where(df['vwap'] > df['vwap'].shift(2), df['volume'], -df['volume'])
+
+    recent = df.tail(p)
+    H, L = recent['vwap'].max(), recent['vwap'].min()
+    if H == L: return None
+
+    step = (H - L) / bins
+    vol1 = np.zeros(bins)
+    vol2 = np.zeros(bins)
+
+    vwap_vals = recent['vwap'].values
+    v1_vals = recent['vol_signed'].values
+    v2_vals = recent['volume'].values
+
+    profile = []
+    for i in range(bins):
+        l_bound = L + step * i
+        h_bound = l_bound + step
+
+        # PineScript smoothing: source >= low_ - step and source <= high_ + step
+        mask = (vwap_vals >= l_bound - step) & (vwap_vals <= h_bound + step)
+        vol1[i] = v1_vals[mask].sum()
+        vol2[i] = v2_vals[mask].sum()
+
+        profile.append({
+            "bin_low": float(l_bound),
+            "bin_high": float(h_bound),
+            "signed_vol": float(vol1[i]),
+            "raw_vol": float(vol2[i])
+        })
+
+    pos_poc_idx = np.argmax(vol1)
+    neg_poc_idx = np.argmin(vol1)
+
+    return {
+        "profile": profile,
+        "pos_poc": profile[pos_poc_idx],
+        "neg_poc": profile[neg_poc_idx]
+    }
 
 def calculate_vwma(series, volume, length):
     return (series * volume).rolling(length).sum() / volume.rolling(length).sum()
@@ -411,7 +466,11 @@ def get_indicator_results_sync(df, selected=None, history=False):
         "current_price": float(cl[-1]),
         "summary": {"trend": "Bullish" if cl[-1] > ema200[-1] else "Bearish", "session": get_sessions(df['timestamp'].iloc[-1])},
         "institutional_strategies": detect_smc(df),
-        "market_dynamics": {"levels": detect_sr_levels(df), "volume_profile": calculate_volume_profile(df)},
+        "market_dynamics": {
+            "levels": detect_sr_levels(df),
+            "volume_profile": calculate_volume_profile(df),
+            "vwap_volume_profile": calculate_vwap_volume_profile(df)
+        },
         "divergences": {"rsi": detect_divergences(df, "RSI"), "macd": detect_divergences(df, "MACD")},
         "price_action_patterns": detect_price_action_patterns(df),
         "custom_lux_algo": {"zscore_zones": {k:v for k,v in zscore_res.items() if k != "series"}, "market_structure": detect_lux_msb_ob(df)},
