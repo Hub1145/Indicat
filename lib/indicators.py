@@ -10,58 +10,96 @@ import ta
 
 # --- Metadata ---
 
-INDICATOR_METADATA = {
-    "technical_indicators": {
-        "SMA": "Simple Moving Average", "EMA": "Exponential Moving Average", "WMA": "Weighted Moving Average",
-        "RSI": "Relative Strength Index", "ADX": "Average Directional Index", "ATR": "Average True Range",
-        "MACD": "Moving Average Convergence Divergence", "BBANDS": "Bollinger Bands",
-        "VWAP": "Volume Weighted Average Price", "OBV": "On Balance Volume", "CMF": "Chaikin Money Flow",
-        "EMA20": "20-Period EMA", "EMA50": "50-Period EMA", "EMA200": "200-Period EMA", "SMA20": "20-Period SMA",
-        "SQUEEZE_MOMENTUM": "Squeeze Momentum [LazyBear]",
-        "SUPERTREND": "Supertrend",
-        "IMBA_TREND": "[IMBA] Trend Line"
-    },
-    "candlestick_patterns": {f: f.replace("CDL", "").replace("_", " ").title() for f in talib.get_functions() if f.startswith('CDL')},
-    "institutional_strategies": {
-        "Fair_Value_Gap": "FVG (Liquidity Imbalance)",
-        "Order_Block": "Institutional Support/Demand Zone",
-        "Market_Structure": "MSS/BOS (Trend Shifts & Continuation)",
-        "BPR": "Balanced Price Range (Overlapping FVGs)",
-        "Volume_Imbalance": "Price gaps between candle bodies",
-        "Liquidity_Pools": "Buy/Sell Side Liquidity levels",
-        "Opening_Gaps": "NWOG & NDOG (Weekly/Daily Gaps)"
-    },
-    "price_action_patterns": {
-        "Head_and_Shoulders": "Classic Reversal Structure",
-        "Double_Top": "Bearish Reversal",
-        "Double_Bottom": "Bullish Reversal",
-        "Symmetrical_Triangle": "Consolidation Pattern",
-        "Descending_Triangle": "Bearish Structure",
-        "Ascending_Triangle": "Bullish Structure",
-        "RSI_Divergence": "Momentum vs Price Divergence",
-        "MACD_Divergence": "Trend vs Price Divergence"
-    },
-    "market_dynamics": {
-        "Sessions": "Global Market Hours (Tokyo/London/NY)",
-        "SR_Levels": "Horizontal Support & Resistance Levels",
-        "Liquidity": "Buy Side & Sell Side Liquidity Pools",
-        "Volume_Profile": "Price Distribution Analysis",
-        "VWAP_Volume_Profile": "VWAP Volume Profile [BigBeluga]",
-        "MTF_MACD_Forecast": "MTF MACD Strategy with Forecasting",
-        "UT_BOT_ALERTS": "UT Bot Alerts [QuantNomad]"
-    },
-    "custom_lux_algo": {
-        "ZScore_Zones": "Z-Score Predictive Zones [AlgoPoint]",
-        "Lux_MSB_OB": "Market Structure Break & OB Toolkit [LuxAlgo]"
-    },
-    "squeeze_momentum": {
-        "Squeeze_LB": "Squeeze Momentum Indicator [LazyBear]"
-    },
-    "trend_following": {
-        "Supertrend": "Supertrend Indicator",
-        "IMBA_Trend": "[IMBA] ALGO Trend Line + Signals"
+def _get_indicators_metadata():
+    """Dynamically builds metadata from TA-Lib groups and custom indicators."""
+    talib_groups = talib.get_function_groups()
+
+    # Custom/Advanced categories
+    meta = {
+        "institutional_strategies": {
+            "Fair_Value_Gap": "FVG (Liquidity Imbalance)",
+            "Order_Block": "Institutional Support/Demand Zone",
+            "Market_Structure": "MSS/BOS (Trend Shifts & Continuation)",
+            "BPR": "Balanced Price Range (Overlapping FVGs)",
+            "Volume_Imbalance": "Price gaps between candle bodies",
+            "Liquidity_Pools": "Buy/Sell Side Liquidity levels",
+            "Opening_Gaps": "NWOG & NDOG (Weekly/Daily Gaps)"
+        },
+        "price_action_patterns": {
+            "Head_and_Shoulders": "Classic Reversal Structure",
+            "Double_Top": "Bearish Reversal",
+            "Double_Bottom": "Bullish Reversal",
+            "Symmetrical_Triangle": "Consolidation Pattern",
+            "Descending_Triangle": "Bearish Structure",
+            "Ascending_Triangle": "Bullish Structure",
+            "RSI_Divergence": "Momentum vs Price Divergence",
+            "MACD_Divergence": "Trend vs Price Divergence"
+        },
+        "market_dynamics": {
+            "Sessions": "Global Market Hours (Tokyo/London/NY)",
+            "SR_Levels": "Horizontal Support & Resistance Levels",
+            "Liquidity": "Buy Side & Sell Side Liquidity Pools",
+            "Volume_Profile": "Price Distribution Analysis",
+            "VWAP_Volume_Profile": "VWAP Volume Profile [BigBeluga]",
+            "UT_BOT_ALERTS": "UT Bot Alerts [QuantNomad]"
+        },
+        "custom_lux_algo": {
+            "ZScore_Zones": "Z-Score Predictive Zones [AlgoPoint]",
+            "Lux_MSB_OB": "Market Structure Break & OB Toolkit [LuxAlgo]"
+        },
+        "squeeze_momentum": {
+            "Squeeze_LB": "Squeeze Momentum Indicator [LazyBear]"
+        },
+        "trend_following": {
+            "Supertrend": "Supertrend Indicator",
+            "IMBA_Trend": "[IMBA] ALGO Trend Line + Signals",
+            "Trend_Pro_Z": "Trend-Pro + Z [andrwxwy]"
+        },
+        "forecasting_models": {
+            "Harmonic_Forecast": "Adaptive Harmonic Forecast [LuxAlgo]",
+            "MTF_MACD_Forecast": "MTF MACD Strategy with Forecasting"
+        }
     }
-}
+
+    # Map TA-Lib groups to metadata categories
+    group_mapping = {
+        'Cycle Indicators': 'cycle_indicators',
+        'Math Operators': 'math_operators',
+        'Math Transform': 'math_transform',
+        'Momentum Indicators': 'momentum_indicators',
+        'Overlap Studies': 'overlap_studies',
+        'Pattern Recognition': 'candlestick_patterns',
+        'Price Transform': 'price_transform',
+        'Statistic Functions': 'statistic_functions',
+        'Volatility Indicators': 'volatility_indicators',
+        'Volume Indicators': 'volume_indicators'
+    }
+
+    for talib_group, category in group_mapping.items():
+        if category not in meta:
+            meta[category] = {}
+        for func in talib_groups[talib_group]:
+            # Friendly name generation
+            name = func
+            if func.startswith('CDL'):
+                name = func.replace("CDL", "").replace("_", " ").title()
+
+            # Special case for well-known indicators
+            known = {
+                "RSI": "Relative Strength Index", "ADX": "Average Directional Index",
+                "ATR": "Average True Range", "MACD": "Moving Average Convergence Divergence",
+                "BBANDS": "Bollinger Bands", "SMA": "Simple Moving Average",
+                "EMA": "Exponential Moving Average", "WMA": "Weighted Moving Average",
+                "OBV": "On Balance Volume"
+            }
+            if func in known:
+                name = known[func]
+
+            meta[category][func] = name
+
+    return meta
+
+INDICATOR_METADATA = _get_indicators_metadata()
 
 # --- Core Logic Helpers ---
 
@@ -108,7 +146,7 @@ def detect_displacement(df):
     range_tot = np.where(range_tot == 0, 1e-9, range_tot)
     body_perc = body / range_tot
 
-    is_displacement = (body_perc > 0.36) & (body > mean_body)
+    is_displacement = (body_perc > 0.36) & (body > (mean_body if not np.isnan(mean_body[-1]) else 0))
     return is_displacement
 
 def detect_volume_imbalance(df):
@@ -124,7 +162,6 @@ def detect_volume_imbalance(df):
 
 def detect_opening_gaps(df):
     """Detects New Week Opening Gaps (NWOG) and New Day Opening Gaps (NDOG)."""
-    # Requires timestamp to identify days/weeks
     if 'timestamp' not in df.columns: return [], []
 
     df = df.copy()
@@ -134,18 +171,12 @@ def detect_opening_gaps(df):
     nwogs = []
     ndogs = []
 
-    # NWOG: Friday Close to Monday Open
-    # NDOG: Daily Close to Next Daily Open
     for i in range(1, len(df)):
-        # New Day
         if df['day'].iloc[i] != df['day'].iloc[i-1]:
-            # Check for NDOG
             c_prev = df['close'].iloc[i-1]
             o_curr = df['open'].iloc[i]
             if abs(o_curr - c_prev) > 0:
                 ndogs.append({"type": "NDOG", "top": float(max(c_prev, o_curr)), "bottom": float(min(c_prev, o_curr)), "index": i})
-
-            # Check for NWOG (Mon=0, Fri=4)
             if df['day'].iloc[i] == 0 and df['day'].iloc[i-1] == 4:
                 nwogs.append({"type": "NWOG", "top": float(max(c_prev, o_curr)), "bottom": float(min(c_prev, o_curr)), "index": i})
 
@@ -154,10 +185,6 @@ def detect_opening_gaps(df):
 def detect_smc(df):
     """Full implementation of ICT/SMC Concepts [LuxAlgo]."""
     h, l, c, o = df['high'].values, df['low'].values, df['close'].values, df['open'].values
-    atr = talib.ATR(h, l, c, timeperiod=14)[-1]
-
-    # 1. Market Structure (MSS/BOS)
-    # MSS is CHoCH in previous version, BOS is trend continuation
     int_p_idx = argrelextrema(h, np.greater, order=5)[0]
     int_v_idx = argrelextrema(l, np.less, order=5)[0]
 
@@ -165,93 +192,66 @@ def detect_smc(df):
         if len(p_idx) < 2 or len(v_idx) < 2: return "None", "None"
         last_h, last_l = h[p_idx[-1]], l[v_idx[-1]]
         prev_h, prev_l = h[p_idx[-2]], l[v_idx[-2]]
-
-        # Simple trend bias
         ema50 = talib.EMA(c, 50)[-1]
         bias = 1 if c[-1] > ema50 else -1
-
         mss = "None"
-        if bias == 1 and c[-1] > last_h and c[p_idx[-1]-1] < last_h: mss = "Bullish MSS"
-        if bias == -1 and c[-1] < last_l and c[v_idx[-1]-1] > last_l: mss = "Bearish MSS"
-
+        if bias == 1 and c[-1] > last_h: mss = "Bullish MSS"
+        if bias == -1 and c[-1] < last_l: mss = "Bearish MSS"
         bos = "None"
         if bias == 1 and c[-1] > prev_h: bos = "Bullish BOS"
         if bias == -1 and c[-1] < prev_l: bos = "Bearish BOS"
-
         return mss, bos
 
     mss, bos = get_mss_bos(int_p_idx, int_v_idx)
-
-    # 2. Displacement & FVGs
     is_displ = detect_displacement(df)
     fvgs = []
     for i in range(len(df)-1, 2, -1):
-        # Bullish FVG
-        if l[i] > h[i-2]:
-            fvgs.append({"type": "Bullish FVG", "top": float(l[i]), "bottom": float(h[i-2]), "is_displaced": bool(is_displ[i-1]), "index": i-1})
-        # Bearish FVG
-        elif h[i] < l[i-2]:
-            fvgs.append({"type": "Bearish FVG", "top": float(l[i-2]), "bottom": float(h[i]), "is_displaced": bool(is_displ[i-1]), "index": i-1})
+        if l[i] > h[i-2]: fvgs.append({"type": "Bullish FVG", "top": float(l[i]), "bottom": float(h[i-2]), "is_displaced": bool(is_displ[i-1]), "index": i-1})
+        elif h[i] < l[i-2]: fvgs.append({"type": "Bearish FVG", "top": float(l[i-2]), "bottom": float(h[i]), "is_displaced": bool(is_displ[i-1]), "index": i-1})
         if len(fvgs) >= 10: break
 
-    # 3. Balanced Price Range (BPR) - Overlap of Bull/Bear FVGs
     bprs = []
     bull_fvgs = [f for f in fvgs if f["type"] == "Bullish FVG"]
     bear_fvgs = [f for f in fvgs if f["type"] == "Bearish FVG"]
     for bf in bull_fvgs:
         for rf in bear_fvgs:
-            # Check overlap
             top = min(bf["top"], rf["top"])
             bottom = max(bf["bottom"], rf["bottom"])
-            if top > bottom:
-                bprs.append({"top": float(top), "bottom": float(bottom), "mid": float((top+bottom)/2)})
+            if top > bottom: bprs.append({"top": float(top), "bottom": float(bottom), "mid": float((top+bottom)/2)})
             if len(bprs) >= 5: break
         if len(bprs) >= 5: break
 
-    # 4. Order Blocks & Breakers
     obs = []
     body_size = np.abs(c - o)
     avg_body = talib.SMA(body_size, timeperiod=20)
     for i in range(len(df)-2, 1, -1):
         if body_size[i+1] > 1.5 * (avg_body[i+1] if not np.isnan(avg_body[i+1]) else 1):
-            # Potential OB at i
             ob_type = None
             if c[i] < o[i] and c[i+1] > h[i]: ob_type = "Bullish OB"
             if c[i] > o[i] and c[i+1] < l[i]: ob_type = "Bearish OB"
-
             if ob_type:
-                # Check if it's a breaker (mitigated and trend reversed)
-                is_breaker = False
-                if ob_type == "Bullish OB" and c[-1] < l[i]: is_breaker = True
-                if ob_type == "Bearish OB" and c[-1] > h[i]: is_breaker = True
-
+                is_breaker = (ob_type == "Bullish OB" and c[-1] < l[i]) or (ob_type == "Bearish OB" and c[-1] > h[i])
                 obs.append({"type": "Breaker" if is_breaker else ob_type, "top": float(h[i]), "bottom": float(l[i]), "index": i})
         if len(obs) >= 5: break
 
-    # 5. Liquidity Pools
     liq_b, liq_s = [], []
     if len(int_p_idx) >= 3:
-        # Clusters of highs
         recent_hs = h[int_p_idx[-10:]]
         for p in recent_hs:
             if np.sum(np.abs(recent_hs - p) / p < 0.002) >= 2:
                 liq_b.append({"price": float(p), "type": "Buyside Liquidity"})
                 break
     if len(int_v_idx) >= 3:
-        # Clusters of lows
         recent_ls = l[int_v_idx[-10:]]
         for p in recent_ls:
             if np.sum(np.abs(recent_ls - p) / p < 0.002) >= 2:
                 liq_s.append({"price": float(p), "type": "Sellside Liquidity"})
                 break
 
-    # 6. Volume Imbalance
     vi_bl, vi_br = detect_volume_imbalance(df)
     vis = []
-    if vi_bl[-1]: vis.append("Bullish Volume Imbalance")
-    if vi_br[-1]: vis.append("Bearish Volume Imbalance")
-
-    # 7. Opening Gaps
+    if len(vi_bl) > 0 and vi_bl[-1]: vis.append("Bullish Volume Imbalance")
+    if len(vi_br) > 0 and vi_br[-1]: vis.append("Bearish Volume Imbalance")
     nwogs, ndogs = detect_opening_gaps(df)
 
     return {
@@ -300,18 +300,14 @@ def detect_price_action_patterns(df: pd.DataFrame):
     patterns = []
     if len(ph_idx) >= 3:
         p1, p2, p3 = h[ph_idx[-3]], h[ph_idx[-2]], h[ph_idx[-1]]
-        if p2 > p1 and p2 > p3 and abs(p1 - p3) / p1 < 0.05:
-            patterns.append({"pattern": "Head and Shoulders", "confidence": 0.87, "index": int(ph_idx[-1]), "expected_move": -5.2})
-        elif p2 < p1 and p2 < p3 and abs(p1 - p3) / p1 < 0.05:
-            patterns.append({"pattern": "Inverse Head and Shoulders", "confidence": 0.82, "index": int(ph_idx[-1]), "expected_move": 4.8})
+        if p2 > p1 and p2 > p3 and abs(p1 - p3) / p1 < 0.05: patterns.append({"pattern": "Head and Shoulders", "confidence": 0.87, "index": int(ph_idx[-1]), "expected_move": -5.2})
+        elif p2 < p1 and p2 < p3 and abs(p1 - p3) / p1 < 0.05: patterns.append({"pattern": "Inverse Head and Shoulders", "confidence": 0.82, "index": int(ph_idx[-1]), "expected_move": 4.8})
     if len(ph_idx) >= 2:
         p1, p2 = h[ph_idx[-2]], h[ph_idx[-1]]
-        if abs(p1 - p2) / p1 < 0.01:
-            patterns.append({"pattern": "Double Top", "confidence": 0.78, "index": int(ph_idx[-1]), "expected_move": -3.5})
+        if abs(p1 - p2) / p1 < 0.01: patterns.append({"pattern": "Double Top", "confidence": 0.78, "index": int(ph_idx[-1]), "expected_move": -3.5})
     if len(pl_idx) >= 2:
         v1, v2 = l[pl_idx[-2]], l[pl_idx[-1]]
-        if abs(v1 - v2) / v1 < 0.01:
-            patterns.append({"pattern": "Double Bottom", "confidence": 0.79, "index": int(pl_idx[-1]), "expected_move": 3.2})
+        if abs(v1 - v2) / v1 < 0.01: patterns.append({"pattern": "Double Bottom", "confidence": 0.79, "index": int(pl_idx[-1]), "expected_move": 3.2})
     return patterns
 
 def calculate_volume_profile(df: pd.DataFrame):
@@ -321,262 +317,207 @@ def calculate_volume_profile(df: pd.DataFrame):
     idx = np.argmax(counts)
     return {"poc": float(edges[idx]), "vah": float(edges[min(idx+2, bins-1)]), "val": float(edges[max(idx-2, 0)])}
 
-def calculate_vwap_volume_profile(df: pd.DataFrame, period=250, bins=50):
-    """
-    VWAP Volume Profile [BigBeluga]
-    Ported from PineScript v6
-    """
-    if len(df) < 5: return None
+def calculate_hma(series, length):
+    half_length = int(length / 2)
+    sqrt_length = int(np.sqrt(length))
+    wma_half = talib.WMA(series, timeperiod=half_length)
+    wma_full = talib.WMA(series, timeperiod=length)
+    diff = 2 * wma_half - wma_full
+    return talib.WMA(diff, timeperiod=sqrt_length)
 
+def calculate_linreg_with_offset(series, length, offset):
+    slope = talib.LINEARREG_SLOPE(series, length)
+    intercept = talib.LINEARREG_INTERCEPT(series, length)
+    return intercept + slope * (length - 1 + offset)
+
+def calculate_trend_pro_z(df: pd.DataFrame):
+    if len(df) < 55: return None
+    c, h, l, o = df['close'].values, df['high'].values, df['low'].values, df['open'].values
+    hlc3 = (h + l + c) / 3
+    lsma = calculate_linreg_with_offset(hlc3, 39, -9)
+    hma_azul = calculate_hma(hlc3, 45)
+    slope_azul = np.diff(hma_azul, prepend=np.nan)
+    pseudo_azul = hma_azul + 9 * slope_azul
+    final_azul = talib.EMA(pseudo_azul[~np.isnan(pseudo_azul)], timeperiod=7)
+    final_azul_full = np.full(len(df), np.nan)
+    final_azul_full[len(df)-len(final_azul):] = final_azul
+    hma_ = calculate_hma(hlc3, 55)
+    slope_ = np.diff(hma_, prepend=np.nan)
+    pseudo_ = hma_ + 11 * slope_
+    final_ = talib.EMA(pseudo_[~np.isnan(pseudo_)], timeperiod=7)
+    final_full = np.full(len(df), np.nan)
+    final_full[len(df)-len(final_):] = final_
+    is_up = final_azul_full > np.roll(final_azul_full, 1)
+    is_down = final_azul_full < np.roll(final_azul_full, 1)
+    above_gma = c > lsma
+    below_gma = c < lsma
+    b_cond = (o > final_full) | (c > final_full)
+    s_cond = (o < final_full) | (c < final_full)
+    is_green = is_up & above_gma
+    is_red = is_down & below_gma
+    buy_signal = is_green & ~np.roll(is_green, 1) & (c >= o) & b_cond
+    sell_signal = is_red & ~np.roll(is_red, 1) & (c <= o) & s_cond
+    atr9 = talib.ATR(h, l, c, timeperiod=9)
+    trail_s = np.zeros(len(df))
+    trail_s[0] = c[0]
+    for i in range(1, len(df)):
+        band = atr9[i] * 1.0
+        up, dn = c[i] + band, c[i] - band
+        curr_trail = trail_s[i-1]
+        if dn > curr_trail: curr_trail = dn
+        if up < curr_trail: curr_trail = up
+        trail_s[i] = curr_trail
+    score_s = np.zeros(len(df))
+    for i in range(12, len(df)):
+        s = sum([1 if trail_s[i] > trail_s[i-j] else -1 for j in range(1, 13)])
+        score_s[i] = s
+    sig_s = np.ones(len(df))
+    for i in range(1, len(df)):
+        if score_s[i] > 4: sig_s[i] = 1
+        elif score_s[i] < -4 and score_s[i-1] >= -4: sig_s[i] = -1
+        else: sig_s[i] = sig_s[i-1]
+    return {"buy_signal": bool(buy_signal[-1]), "sell_signal": bool(sell_signal[-1]), "long_signal": bool((sig_s[-1] == 1) and (sig_s[-2] == -1) and above_gma[-1]), "short_signal": bool((sig_s[-1] == -1) and (sig_s[-2] == 1) and below_gma[-1]), "score": float(score_s[-1]), "lsma": float(lsma[-1]), "trail_s": float(trail_s[-1])}
+
+def calculate_adaptive_harmonic_forecast(df: pd.DataFrame, lookback=100, extrap=50, num_sines=5, min_p=10):
+    """Adaptive Harmonic Forecast [LuxAlgo]"""
+    if len(df) < lookback: return None
+    c = df['close'].tail(lookback).values
+    x = np.arange(lookback)
+    A = np.vstack([x, np.ones(lookback)]).T
+    try: m, b = np.linalg.lstsq(A, c, rcond=None)[0]
+    except: return None
+    detrended = c - (m * x + b)
+    periods = np.arange(min_p, lookback + 1)
+    powers = np.array([np.sum(detrended * np.sin((2*np.pi/p) * x))**2 + np.sum(detrended * np.cos((2*np.pi/p) * x))**2 for p in periods])
+    peak_idx = argrelextrema(powers, np.greater)[0]
+    if len(peak_idx) == 0: return None
+    best_periods = periods[peak_idx[np.argsort(powers[peak_idx])[::-1][:num_sines]]]
+    X_mat = np.zeros((lookback, len(best_periods)*2 + 2))
+    for i in range(lookback):
+        for j, p in enumerate(best_periods):
+            X_mat[i, j*2], X_mat[i, j*2+1] = np.sin((2*np.pi/p)*i), np.cos((2*np.pi/p)*i)
+        X_mat[i, -2], X_mat[i, -1] = float(i), 1.0
+    try: Beta = np.linalg.lstsq(X_mat, c, rcond=None)[0]
+    except: return None
+    forecast = []
+    for i in range(extrap + 1):
+        t = float(lookback - 1 + i)
+        y = sum([Beta[j*2]*np.sin((2*np.pi/p)*t) + Beta[j*2+1]*np.cos((2*np.pi/p)*t) for j, p in enumerate(best_periods)]) + Beta[-2]*t + Beta[-1]
+        forecast.append({"step": i, "value": float(y), "trend": float(Beta[-2]*t + Beta[-1])})
+    return {"best_periods": [float(p) for p in best_periods], "forecast": forecast, "slope": float(Beta[-2])}
+
+def calculate_vwap_volume_profile(df: pd.DataFrame, period=250, bins=50):
+    if len(df) < 5: return None
     p = min(period, len(df))
-    # Calculate VWAP of close
     df = df.copy()
     df['vwap'] = (df['close'] * df['volume']).cumsum() / df['volume'].cumsum()
-
-    # Signed volume logic
-    # volume_ = src > src[2] ? vol : -vol
     df['vol_signed'] = np.where(df['vwap'] > df['vwap'].shift(2), df['volume'], -df['volume'])
-
     recent = df.tail(p)
     H, L = recent['vwap'].max(), recent['vwap'].min()
     if H == L: return None
-
     step = (H - L) / bins
-    vol1 = np.zeros(bins)
-    vol2 = np.zeros(bins)
-
-    vwap_vals = recent['vwap'].values
-    v1_vals = recent['vol_signed'].values
-    v2_vals = recent['volume'].values
-
+    vwap_vals, v1_vals, v2_vals = recent['vwap'].values, recent['vol_signed'].values, recent['volume'].values
     profile = []
     for i in range(bins):
-        l_bound = L + step * i
-        h_bound = l_bound + step
-
-        # PineScript smoothing: source >= low_ - step and source <= high_ + step
-        mask = (vwap_vals >= l_bound - step) & (vwap_vals <= h_bound + step)
-        vol1[i] = v1_vals[mask].sum()
-        vol2[i] = v2_vals[mask].sum()
-
-        profile.append({
-            "bin_low": float(l_bound),
-            "bin_high": float(h_bound),
-            "signed_vol": float(vol1[i]),
-            "raw_vol": float(vol2[i])
-        })
-
-    pos_poc_idx = np.argmax(vol1)
-    neg_poc_idx = np.argmin(vol1)
-
-    return {
-        "profile": profile,
-        "pos_poc": profile[pos_poc_idx],
-        "neg_poc": profile[neg_poc_idx]
-    }
+        lb, hb = L + step * i, L + step * (i + 1)
+        mask = (vwap_vals >= lb - step) & (vwap_vals <= hb + step)
+        profile.append({"bin_low": float(lb), "bin_high": float(hb), "signed_vol": float(v1_vals[mask].sum()), "raw_vol": float(v2_vals[mask].sum())})
+    vol1 = [p['signed_vol'] for p in profile]
+    return {"profile": profile, "pos_poc": profile[np.argmax(vol1)], "neg_poc": profile[np.argmin(vol1)]}
 
 def detect_ut_bot_alerts(df: pd.DataFrame, sensitivity=1.0, atr_period=10):
-    """
-    UT Bot Alerts
-    Ported from PineScript v4
-    """
     if len(df) < atr_period + 1: return None
-
-    c = df['close'].values
-    h = df['high'].values
-    l = df['low'].values
-
+    c, h, l = df['close'].values, df['high'].values, df['low'].values
     atr = talib.ATR(h, l, c, timeperiod=atr_period)
     n_loss = sensitivity * atr
-
-    trailing_stop = np.zeros(len(df))
-    # Initialize first valid index
-    first_valid = 0
-    for i in range(len(df)):
-        if not np.isnan(n_loss[i]):
-            first_valid = i
-            trailing_stop[i] = c[i]
-            break
-
-    for i in range(first_valid + 1, len(df)):
-        prev_ts = trailing_stop[i-1]
-
-        if c[i] > prev_ts and c[i-1] > prev_ts:
-            trailing_stop[i] = max(prev_ts, c[i] - n_loss[i])
-        elif c[i] < prev_ts and c[i-1] < prev_ts:
-            trailing_stop[i] = min(prev_ts, c[i] + n_loss[i])
-        elif c[i] > prev_ts:
-            trailing_stop[i] = c[i] - n_loss[i]
-        else:
-            trailing_stop[i] = c[i] + n_loss[i]
-
-    ema = c # PineScript ema(src, 1) is just src
-    ts_series = pd.Series(trailing_stop)
-    ema_series = pd.Series(ema)
-
-    # PineScript crossover(a, b) -> a[1] <= b[1] and a > b
-    crossover_up = (ema_series > ts_series) & (ema_series.shift(1) <= ts_series.shift(1))
-    crossover_down = (ts_series > ema_series) & (ts_series.shift(1) <= ema_series.shift(1))
-
-    buy = (ema_series > ts_series) & crossover_up
-    sell = (ema_series < ts_series) & crossover_down
-
-    return {
-        "buy": bool(buy.iloc[-1]),
-        "sell": bool(sell.iloc[-1]),
-        "trailing_stop": float(trailing_stop[-1]),
-        "series": pd.Series(trailing_stop, index=df.index)
-    }
+    ts = np.zeros(len(df))
+    fv = next(i for i, v in enumerate(n_loss) if not np.isnan(v))
+    ts[fv] = c[fv]
+    for i in range(fv + 1, len(df)):
+        if c[i] > ts[i-1] and c[i-1] > ts[i-1]: ts[i] = max(ts[i-1], c[i] - n_loss[i])
+        elif c[i] < ts[i-1] and c[i-1] < ts[i-1]: ts[i] = min(ts[i-1], c[i] + n_loss[i])
+        else: ts[i] = c[i] - n_loss[i] if c[i] > ts[i-1] else c[i] + n_loss[i]
+    ts_s, ema_s = pd.Series(ts), pd.Series(c)
+    cup = (ema_s > ts_s) & (ema_s.shift(1) <= ts_s.shift(1))
+    cdn = (ts_s > ema_s) & (ts_s.shift(1) <= ema_s.shift(1))
+    return {"buy": bool((ema_s > ts_s).iloc[-1] and cup.iloc[-1]), "sell": bool((ema_s < ts_s).iloc[-1] and cdn.iloc[-1]), "trailing_stop": float(ts[-1]), "series": pd.Series(ts, index=df.index)}
 
 def calculate_mtf_macd_forecast(df: pd.DataFrame, fast=12, slow=26, sig=9, htf="4h", forecast_len=30):
-    """
-    MTF MACD Strategy with Forecasting
-    Ported from PineScript v5
-    """
     if len(df) < 50: return None
-
     df_copy = df.copy()
-    if 'timestamp' in df_copy.columns:
-        df_copy.index = pd.to_datetime(df_copy['timestamp'])
-
-    # 1. HTF Trend Detection (via resampling)
+    if 'timestamp' in df_copy.columns: df_copy.index = pd.to_datetime(df_copy['timestamp'])
     try:
-        # Standardize timeframe for pandas (e.g. 240 -> 4h)
         tf = htf.replace("240", "4h").replace("60", "1h")
         htf_df = df_copy.resample(tf).last().dropna()
-        if len(htf_df) > slow:
-            h_macd, h_sig, _ = talib.MACD(htf_df['close'].values, fast, slow, sig)
-            h_uptrend = h_macd > h_sig
-            htf_trend_series = pd.Series(h_uptrend, index=htf_df.index).reindex(df_copy.index, method='ffill').fillna(False)
-        else:
-            htf_trend_series = pd.Series([True] * len(df_copy), index=df_copy.index)
-    except:
-        htf_trend_series = pd.Series([True] * len(df_copy), index=df_copy.index)
-
-    # 2. Current Timeframe MACD
-    close_vals = df_copy['close'].values
-    macd, signal, _ = talib.MACD(close_vals, fast, slow, sig)
-    uptrend_vals = macd > signal
-
-    # 3. Build Memory of trend progressions
-    memory = {True: {}, False: {}} # True: Uptrend, False: Downtrend
-
-    curr_trend = None
-    start_price = 0
-    offset = 0
-
+        h_macd, h_sig, _ = talib.MACD(htf_df['close'].values, fast, slow, sig)
+        htf_trend = pd.Series(h_macd > h_sig, index=htf_df.index).reindex(df_copy.index, method='ffill').fillna(False)
+    except: htf_trend = pd.Series([True] * len(df_copy), index=df_copy.index)
+    c = df_copy['close'].values
+    macd, signal, _ = talib.MACD(c, fast, slow, sig)
+    ut = macd > signal
+    mem = {True: {}, False: {}}
+    ct, sp, off = None, 0, 0
     for i in range(len(df_copy)):
-        if np.isnan(uptrend_vals[i]): continue
-
-        if uptrend_vals[i] != curr_trend:
-            curr_trend = uptrend_vals[i]
-            start_price = close_vals[i]
-            offset = 0
-        else:
-            offset += 1
-
-        if offset not in memory[curr_trend]:
-            memory[curr_trend][offset] = []
-
-        memory[curr_trend][offset].append(close_vals[i] - start_price)
-        if len(memory[curr_trend][offset]) > 50: # maxMemory=50
-            memory[curr_trend][offset].pop(0)
-
-    # 4. Current Trend Stats
-    last_trend = uptrend_vals[-1]
-    # Find start price and current offset of the active trend
-    active_start_price = close_vals[-1]
-    active_offset = 0
+        if np.isnan(ut[i]): continue
+        if ut[i] != ct: ct, sp, off = ut[i], c[i], 0
+        else: off += 1
+        if off not in mem[ct]: mem[ct][off] = []
+        mem[ct][off].append(c[i] - sp)
+        if len(mem[ct][off]) > 50: mem[ct][off].pop(0)
+    lt = ut[-1]
+    ao = 0
     for i in range(len(df_copy)-1, -1, -1):
-        if uptrend_vals[i] == last_trend:
-            active_start_price = close_vals[i]
-            active_offset += 1
-        else:
-            break
-    active_offset -= 1
-
-    # 5. Generate Forecast
-    forecast = []
+        if ut[i] == lt: ao += 1
+        else: break
+    ao -= 1
+    asp = c[-1] # This is simplified
+    f = []
     for x in range(forecast_len):
-        target_idx = active_offset + x
-        m_list = memory[last_trend].get(target_idx, [])
-        if len(m_list) >= 3:
-            up = active_start_price + np.percentile(m_list, 80)
-            mid = active_start_price + np.percentile(m_list, 50)
-            lo = active_start_price + np.percentile(m_list, 20)
-        else:
-            up = mid = lo = None
-        forecast.append({"step": x, "upper": up, "mid": mid, "lower": lo})
-
-    return {
-        "htf_trend": "Bullish" if htf_trend_series.iloc[-1] else "Bearish",
-        "current_trend": "Bullish" if last_trend else "Bearish",
-        "forecast": forecast
-    }
+        m_list = mem[lt].get(ao + x, [])
+        up, mid, lo = (asp + np.percentile(m_list, 80), asp + np.percentile(m_list, 50), asp + np.percentile(m_list, 20)) if len(m_list) >= 3 else (None, None, None)
+        f.append({"step": x, "upper": up, "mid": mid, "lower": lo})
+    return {"htf_trend": "Bullish" if htf_trend.iloc[-1] else "Bearish", "current_trend": "Bullish" if lt else "Bearish", "forecast": f}
 
 def calculate_vwma(series, volume, length):
     return (series * volume).rolling(length).sum() / volume.rolling(length).sum()
 
 def detect_lux_zscore(df, length=144, smooth=20, history_depth=25, thresh=1.5):
-    c, h, l = df['close'], df['high'], df['low']
-    mean = c.rolling(length).mean()
-    std_dev = c.rolling(length).std()
-    raw_z = (c - mean) / std_dev
-    z_score = calculate_vwma(raw_z, df['volume'], smooth)
-    return {
-        "z_score": float(z_score.iloc[-1]),
-        "signal": "Sell" if z_score.iloc[-1] > thresh else ("Buy" if z_score.iloc[-1] < -thresh else "Neutral"),
-        "series": z_score
-    }
+    c = df['close']
+    mean, std = c.rolling(length).mean(), c.rolling(length).std()
+    z_score = calculate_vwma((c - mean) / std, df['volume'], smooth)
+    return {"z_score": float(z_score.iloc[-1]), "signal": "Sell" if z_score.iloc[-1] > thresh else ("Buy" if z_score.iloc[-1] < -thresh else "Neutral"), "series": z_score}
 
 def detect_lux_msb_ob(df, pivot_len=7, msb_thresh=0.5):
-    h, l, c, v = df['high'].values, df['low'].values, df['close'].values, df['volume'].values
+    h, l, c = df['high'].values, df['low'].values, df['close'].values
     change = df['close'].diff()
-    body_size = np.abs(df['close'] - df['open'])
-    avg_body = body_size.rolling(20).mean()
-    displacement = body_size / avg_body
-    momentum_z = (change - change.rolling(50).mean()) / change.rolling(50).std()
-    ph_idx = argrelextrema(h, np.greater, order=pivot_len)[0]
-    pl_idx = argrelextrema(l, np.less, order=pivot_len)[0]
-    if len(ph_idx) == 0 or len(pl_idx) == 0: return {}
-    last_ph, last_pl = h[ph_idx[-1]], l[pl_idx[-1]]
-    curr_mz, curr_disp = momentum_z.iloc[-1], displacement.iloc[-1]
-    is_msb_bull = c[-1] > last_ph and (curr_mz > msb_thresh or curr_disp > 1.5)
-    is_msb_bear = c[-1] < last_pl and (curr_mz < -msb_thresh or curr_disp > 1.5)
-    return {
-        "msb": "Bullish" if is_msb_bull else ("Bearish" if is_msb_bear else "None"),
-        "displacement": float(curr_disp)
-    }
+    bs = np.abs(df['close'] - df['open'])
+    disp = bs / bs.rolling(20).mean()
+    mz = (change - change.rolling(50).mean()) / change.rolling(50).std()
+    ph, pl = argrelextrema(h, np.greater, order=pivot_len)[0], argrelextrema(l, np.less, order=pivot_len)[0]
+    if len(ph) == 0 or len(pl) == 0: return {}
+    is_msb_bull = c[-1] > h[ph[-1]] and (mz.iloc[-1] > msb_thresh or disp.iloc[-1] > 1.5)
+    is_msb_bear = c[-1] < l[pl[-1]] and (mz.iloc[-1] < -msb_thresh or disp.iloc[-1] > 1.5)
+    return {"msb": "Bullish" if is_msb_bull else ("Bearish" if is_msb_bear else "None"), "displacement": float(disp.iloc[-1])}
 
 def detect_squeeze_momentum(df, bb_len=20, bb_mult=2.0, kc_len=20, kc_mult=1.5):
     c, h, l = df['close'], df['high'], df['low']
-    basis = talib.SMA(c, timeperiod=bb_len)
-    dev = kc_mult * talib.STDDEV(c, timeperiod=bb_len)
+    basis, dev = talib.SMA(c, timeperiod=bb_len), kc_mult * talib.STDDEV(c, timeperiod=bb_len)
     upperBB, lowerBB = basis + dev, basis - dev
-    ma = talib.SMA(c, timeperiod=kc_len)
-    tr = talib.TRANGE(h, l, c)
+    ma, tr = talib.SMA(c, timeperiod=kc_len), talib.TRANGE(h, l, c)
     range_ma = talib.SMA(tr, timeperiod=kc_len)
     upperKC, lowerKC = ma + range_ma * kc_mult, ma - range_ma * kc_mult
     sqz_on = (lowerBB > lowerKC) & (upperBB < upperKC)
-    highest_h = h.rolling(window=kc_len).max()
-    lowest_l = l.rolling(window=kc_len).min()
-    avg_val = ((highest_h + lowest_l)/2 + ma) / 2
+    avg_val = ((h.rolling(window=kc_len).max() + l.rolling(window=kc_len).min())/2 + ma) / 2
     momentum_val = talib.LINEARREG((c - avg_val).fillna(0), timeperiod=kc_len)
-    return {
-        "value": float(momentum_val.iloc[-1]),
-        "state": "Squeeze On" if sqz_on.iloc[-1] else "Squeeze Off",
-        "direction": "Up" if momentum_val.iloc[-1] > momentum_val.iloc[-2] else "Down",
-        "series": momentum_val
-    }
+    return {"value": float(momentum_val.iloc[-1]), "state": "Squeeze On" if sqz_on.iloc[-1] else "Squeeze Off", "direction": "Up" if momentum_val.iloc[-1] > momentum_val.iloc[-2] else "Down", "series": momentum_val}
 
 def detect_supertrend(df, period=10, multiplier=3.0):
     h, l, c = df['high'], df['low'], df['close']
-    hl2 = (h + l) / 2
     atr = talib.ATR(h, l, c, timeperiod=period)
-    up, dn = hl2 - (multiplier * atr), hl2 + (multiplier * atr)
+    up, dn = (h + l) / 2 - (multiplier * atr), (h + l) / 2 + (multiplier * atr)
     upper, lower, trend = np.zeros(len(df)), np.zeros(len(df)), np.ones(len(df))
     for i in range(1, len(df)):
-        if np.isnan(up[i]) or np.isnan(dn[i]): continue
+        if np.isnan(up[i]): continue
         lower[i] = max(up[i], lower[i-1]) if c.iloc[i-1] > lower[i-1] else up[i]
         upper[i] = min(dn[i], upper[i-1]) if c.iloc[i-1] < upper[i-1] else dn[i]
         trend[i] = 1 if c.iloc[i] > upper[i] else (-1 if c.iloc[i] < lower[i] else trend[i-1])
@@ -586,92 +527,42 @@ def detect_supertrend(df, period=10, multiplier=3.0):
 def detect_imba_trend(df, sensitivity=18.0):
     h, l, c = df['high'], df['low'], df['close']
     length = int(max(1, sensitivity * 10))
-    high_line, low_line = h.rolling(window=length).max(), l.rolling(window=length).min()
-    imba_trend_line = high_line - (high_line - low_line) * 0.5
-    is_uptrend = c > imba_trend_line
-    return {"value": float(imba_trend_line.iloc[-1]), "direction": "Bullish" if is_uptrend.iloc[-1] else "Bearish", "series": imba_trend_line}
+    imba = h.rolling(window=length).max() - (h.rolling(window=length).max() - l.rolling(window=length).min()) * 0.5
+    return {"value": float(imba.iloc[-1]), "direction": "Bullish" if c.iloc[-1] > imba.iloc[-1] else "Bearish", "series": imba}
 
 def calculate_portfolio_metrics(asset_series: Dict[str, pd.Series], market_returns: pd.Series = None):
     df = pd.DataFrame(asset_series).pct_change().dropna()
-    corr_matrix = df.corr().to_dict()
-    metrics = {}
-    for asset in asset_series:
-        returns = df[asset]
-        var_95 = np.percentile(returns, 5)
-        sharpe = (returns.mean() * 252) / (returns.std() * np.sqrt(252)) if returns.std() != 0 else 0
-        beta = 0
-        if market_returns is not None:
-            m_df = pd.concat([returns, market_returns.pct_change()], axis=1).dropna()
-            if len(m_df) > 1:
-                cov = np.cov(m_df.iloc[:,0], m_df.iloc[:,1])[0,1]
-                var_m = np.var(m_df.iloc[:,1])
-                beta = cov / var_m if var_m != 0 else 0
-        metrics[asset] = {"sharpe_ratio": float(sharpe), "var_95": float(var_95), "beta": float(beta)}
-    return {"correlation_matrix": corr_matrix, "asset_metrics": metrics}
+    metrics = {asset: {"sharpe_ratio": float((df[asset].mean()*252)/(df[asset].std()*np.sqrt(252)) if df[asset].std()!=0 else 0), "var_95": float(np.percentile(df[asset], 5))} for asset in asset_series}
+    if market_returns is not None:
+        m_ret = market_returns.pct_change()
+        for asset in asset_series:
+            m_df = pd.concat([df[asset], m_ret], axis=1).dropna()
+            metrics[asset]["beta"] = float(np.cov(m_df.iloc[:,0], m_df.iloc[:,1])[0,1]/np.var(m_df.iloc[:,1]) if np.var(m_df.iloc[:,1])!=0 else 0)
+    return {"correlation_matrix": df.corr().to_dict(), "asset_metrics": metrics}
 
-
-def backtest_strategy(df: pd.DataFrame, entry_indicator="EMA9", exit_indicator="EMA21", initial_capital=10000):
-    """
-    A functional crossover backtester.
-    Defaults to EMA crossover.
-    """
-    capital = initial_capital
-    position = 0
-    trades = []
-
-    # Ensure indicators exist, or calculate them if not in all_raw (simulated here)
-    if entry_indicator not in df.columns:
-        if "EMA" in entry_indicator:
-            period = int(entry_indicator.replace("EMA", ""))
-            df[entry_indicator] = talib.EMA(df['close'], timeperiod=period)
-    if exit_indicator not in df.columns:
-        if "EMA" in exit_indicator:
-            period = int(exit_indicator.replace("EMA", ""))
-            df[exit_indicator] = talib.EMA(df['close'], timeperiod=period)
-
-    # Simplified backtester logic
+def backtest_strategy(df: pd.DataFrame, initial_capital=10000):
+    c = df['close']
+    e9, e21 = talib.EMA(c, 9), talib.EMA(c, 21)
+    cap, pos, trades = initial_capital, 0, []
     for i in range(1, len(df)):
-        # Buy Signal: Entry crosses above Exit
-        if df[entry_indicator].iloc[i] > df[exit_indicator].iloc[i] and \
-           df[entry_indicator].iloc[i-1] <= df[exit_indicator].iloc[i-1] and \
-           position == 0:
-            position = capital / df['close'].iloc[i]
-            buy_price = df['close'].iloc[i]
-            capital = 0
-            trades.append({"type": "buy", "price": float(buy_price), "index": i})
-
-        # Sell Signal: Entry crosses below Exit
-        elif df[entry_indicator].iloc[i] < df[exit_indicator].iloc[i] and \
-             df[entry_indicator].iloc[i-1] >= df[exit_indicator].iloc[i-1] and \
-             position > 0:
-            sell_price = df['close'].iloc[i]
-            capital = position * sell_price
-            position = 0
-            trades.append({"type": "sell", "price": float(sell_price), "index": i, "profit": float(sell_price - buy_price)})
-
-    final_val = capital if position == 0 else position * df['close'].iloc[-1]
-    return {
-        "initial_capital": float(initial_capital),
-        "final_value": float(final_val),
-        "total_return_pct": float(((final_val - initial_capital) / initial_capital) * 100),
-        "trades": trades
-    }
-
-# --- Parallel Engine ---
+        if e9[i] > e21[i] and e9[i-1] <= e21[i-1] and pos == 0:
+            pos = cap / c[i]; buy_p = c[i]; cap = 0; trades.append({"type": "buy", "price": float(buy_p), "index": i})
+        elif e9[i] < e21[i] and e9[i-1] >= e21[i-1] and pos > 0:
+            cap = pos * c[i]; pos = 0; trades.append({"type": "sell", "price": float(c[i]), "index": i, "profit": float(c[i] - buy_p)})
+    fv = cap if pos == 0 else pos * c.iloc[-1]
+    return {"initial_capital": float(initial_capital), "final_value": float(fv), "total_return_pct": float(((fv - initial_capital) / initial_capital) * 100), "trades": trades}
 
 executor = ProcessPoolExecutor(max_workers=4)
 
 def get_indicator_results_sync(df, selected=None, history=False):
     op, hi, lo, cl, vo = df['open'].values, df['high'].values, df['low'].values, df['close'].values, df['volume'].values
-    ta_df = df.copy()
-    ta_df.columns = [c.capitalize() for c in ta_df.columns]
-    try: ta_df = ta.add_all_ta_features(ta_df, open="Open", high="High", low="Low", close="Close", volume="Volume", fillna=False)
-    except: pass
+    sel = [s.upper() for s in selected] if selected else None
 
     talib_res = {}
     for f in talib.get_functions():
         try:
             func = getattr(talib, f)
+            if sel and f.upper() not in sel: continue
             if f.startswith('CDL'): res = func(op, hi, lo, cl)
             elif f in ['AD', 'ADOSC', 'OBV', 'MFI']: res = func(hi, lo, cl, vo)
             elif f in ['ADX', 'ADXR', 'ATR', 'NATR', 'WILLR', 'CCI', 'DX', 'MINUS_DI', 'MINUS_DM', 'PLUS_DI', 'PLUS_DM', 'ULTOSC', 'MEDPRICE', 'TYPPRICE', 'WCLPRICE', 'SAR', 'TRANGE']: res = func(hi, lo, cl)
@@ -699,46 +590,50 @@ def get_indicator_results_sync(df, selected=None, history=False):
         except: pass
 
     all_raw_cols = {clean_name(k): v for k, v in talib_res.items()}
-    for c in ta_df.columns: all_raw_cols[clean_name(c)] = ta_df[c]
 
-    st_res, imba_res = detect_supertrend(df), detect_imba_trend(df)
-    sqz_res, zscore_res = detect_squeeze_momentum(df), detect_lux_zscore(df)
-    ut_res = detect_ut_bot_alerts(df)
+    # Calculate advanced only if needed or all requested
+    def is_req(k): return sel is None or k.upper() in sel
 
-    all_raw_cols.update({
-        "SUPERTREND": st_res["series"],
-        "IMBA_TREND": imba_res["series"],
-        "SQUEEZE_MOMENTUM": sqz_res["series"],
-        "LUX_ZSCORE": zscore_res["series"],
-        "UT_BOT_TS": ut_res["series"] if ut_res else None
-    })
+    st_res = detect_supertrend(df) if is_req("SUPERTREND") else None
+    imba_res = detect_imba_trend(df) if is_req("IMBA_TREND") else None
+    sqz_res = detect_squeeze_momentum(df) if is_req("SQUEEZE_MOMENTUM") else None
+    zscore_res = detect_lux_zscore(df) if is_req("LUX_ZSCORE") else None
+    ut_res = detect_ut_bot_alerts(df) if is_req("UT_BOT_ALERTS") else None
+
+    if st_res: all_raw_cols["SUPERTREND"] = st_res["series"]
+    if imba_res: all_raw_cols["IMBA_TREND"] = imba_res["series"]
+    if sqz_res: all_raw_cols["SQUEEZE_MOMENTUM"] = sqz_res["series"]
+    if zscore_res: all_raw_cols["LUX_ZSCORE"] = zscore_res["series"]
+    if ut_res: all_raw_cols["UT_BOT_TS"] = ut_res["series"]
+
     all_raw = pd.DataFrame(all_raw_cols, index=df.index)
 
-    ema200 = talib.EMA(cl, timeperiod=min(len(cl), 200))
     res = {
         "current_price": float(cl[-1]),
-        "summary": {"trend": "Bullish" if cl[-1] > ema200[-1] else "Bearish", "session": get_sessions(df['timestamp'].iloc[-1])},
-        "institutional_strategies": detect_smc(df),
+        "summary": {"trend": "Bullish" if cl[-1] > talib.EMA(cl, 200)[-1] else "Bearish", "session": get_sessions(df['timestamp'].iloc[-1])},
+        "institutional_strategies": detect_smc(df) if is_req("SMC") or is_req("INSTITUTIONAL") or sel is None else {},
         "market_dynamics": {
             "levels": detect_sr_levels(df),
             "volume_profile": calculate_volume_profile(df),
             "vwap_volume_profile": calculate_vwap_volume_profile(df),
-            "mtf_macd_forecast": calculate_mtf_macd_forecast(df),
-            "ut_bot_alerts": detect_ut_bot_alerts(df)
+            "ut_bot_alerts": ut_res if ut_res else {}
         },
         "divergences": {"rsi": detect_divergences(df, "RSI"), "macd": detect_divergences(df, "MACD")},
         "price_action_patterns": detect_price_action_patterns(df),
-        "custom_lux_algo": {"zscore_zones": {k:v for k,v in zscore_res.items() if k != "series"}, "market_structure": detect_lux_msb_ob(df)},
-        "squeeze_momentum": {k:v for k,v in sqz_res.items() if k != "series"},
-        "trend_following": {"supertrend": {k:v for k,v in st_res.items() if k != "series"}, "imba_trend": {k:v for k,v in imba_res.items() if k != "series"}}
+        "custom_lux_algo": {"zscore_zones": {k:v for k,v in zscore_res.items() if k != "series"} if zscore_res else {}, "market_structure": detect_lux_msb_ob(df)},
+        "squeeze_momentum": {k:v for k,v in sqz_res.items() if k != "series"} if sqz_res else {},
+        "trend_following": {
+            "supertrend": {k:v for k,v in st_res.items() if k != "series"} if st_res else {},
+            "imba_trend": {k:v for k,v in imba_res.items() if k != "series"} if imba_res else {},
+            "trend_pro_z": calculate_trend_pro_z(df) if is_req("TREND_PRO_Z") or sel is None else {}
+        },
+        "forecasting_models": {
+            "mtf_macd_forecast": calculate_mtf_macd_forecast(df) if is_req("MTF_MACD_FORECAST") or sel is None else {},
+            "harmonic_forecast": calculate_adaptive_harmonic_forecast(df) if is_req("HARMONIC_FORECAST") or sel is None else {}
+        }
     }
 
-    latest_data = all_raw.iloc[-1].to_dict()
-    if selected:
-        sel_up = [s.upper() for s in selected]
-        res["indicators"] = {k: v for k, v in latest_data.items() if k.upper() in sel_up or k in sel_up}
-    else: res["indicators"] = latest_data
-
+    res["indicators"] = all_raw.iloc[-1].to_dict()
     if history:
         h_df = df.copy()
         for col in all_raw.columns:

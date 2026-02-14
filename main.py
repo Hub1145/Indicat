@@ -8,6 +8,7 @@ import asyncio
 import os
 import io
 import orjson
+import html
 from datetime import datetime
 from typing import List, Optional, Literal, Dict, Any
 from fastapi import FastAPI, HTTPException, Depends, Header, Query, Request, Response
@@ -290,8 +291,9 @@ async def get_chart(provider: str = "crypto", symbol: str = "BTC/USDT", timefram
             if k not in indicator_series: indicator_series[k] = []
             indicator_series[k].append({"time": t, "value": float(v)})
 
-    html = """<html><head><script src="https://unpkg.com/lightweight-charts@4.0.0/dist/lightweight-charts.standalone.production.js"></script></head>
-    <body style="background:#131722;color:white"><h2>"""+symbol+"""</h2><div id="c" style="width:1000px;height:600px"></div><div id="oscillators"></div><script>
+    safe_symbol = html.escape(symbol)
+    html_content = f"""<html><head><script src="https://unpkg.com/lightweight-charts@4.0.0/dist/lightweight-charts.standalone.production.js"></script></head>
+    <body style="background:#131722;color:white"><h2>{safe_symbol}</h2><div id="c" style="width:1000px;height:600px"></div><div id="oscillators"></div><script>
     const chart = LightweightCharts.createChart(document.getElementById('c'), {width:1000, height:600, layout:{background:{color:'#131722'},textColor:'#d1d4dc'}});
     const cs = chart.addCandlestickSeries(); cs.setData("""+orjson.dumps(candles).decode()+""");
     const indData = """+orjson.dumps(indicator_series).decode()+""";
@@ -318,7 +320,7 @@ async def get_chart(provider: str = "crypto", symbol: str = "BTC/USDT", timefram
         }
     });
     </script></body></html>"""
-    return html
+    return html_content
 
 if __name__ == "__main__":
     import uvicorn
