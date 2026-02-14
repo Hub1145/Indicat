@@ -53,7 +53,8 @@ def _get_indicators_metadata():
         "trend_following": {
             "Supertrend": "Supertrend Indicator",
             "IMBA_Trend": "[IMBA] ALGO Trend Line + Signals",
-            "Trend_Pro_Z": "Trend-Pro + Z [andrwxwy]"
+            "Trend_Pro_Z": "Trend-Pro + Z [andrwxwy]",
+            "Ichimoku": "Ichimoku Cloud (Tenkan, Kijun, Senkou A/B)"
         },
         "forecasting_models": {
             "Harmonic_Forecast": "Adaptive Harmonic Forecast [LuxAlgo]",
@@ -334,6 +335,25 @@ def calculate_linreg_with_offset(series, length, offset):
     slope = talib.LINEARREG_SLOPE(series, length)
     intercept = talib.LINEARREG_INTERCEPT(series, length)
     return intercept + slope * (length - 1 + offset)
+
+def calculate_ichimoku(df: pd.DataFrame):
+    """Ichimoku Cloud Calculation."""
+    if len(df) < 52: return None
+    h, l = df['high'], df['low']
+
+    tenkan_sen = (h.rolling(window=9).max() + l.rolling(window=9).min()) / 2
+    kijun_sen = (h.rolling(window=26).max() + l.rolling(window=26).min()) / 2
+    senkou_span_a = ((tenkan_sen + kijun_sen) / 2).shift(26)
+    senkou_span_b = ((h.rolling(window=52).max() + l.rolling(window=52).min()) / 2).shift(26)
+    chikou_span = df['close'].shift(-26)
+
+    return {
+        "tenkan_sen": float(tenkan_sen.iloc[-1]),
+        "kijun_sen": float(kijun_sen.iloc[-1]),
+        "senkou_span_a": float(senkou_span_a.iloc[-1]) if not np.isnan(senkou_span_a.iloc[-1]) else None,
+        "senkou_span_b": float(senkou_span_b.iloc[-1]) if not np.isnan(senkou_span_b.iloc[-1]) else None,
+        "is_bullish": bool(df['close'].iloc[-1] > senkou_span_a.iloc[-1] and df['close'].iloc[-1] > senkou_span_b.iloc[-1]) if not np.isnan(senkou_span_a.iloc[-1]) else False
+    }
 
 def calculate_trend_pro_z(df: pd.DataFrame):
     if len(df) < 55: return None
@@ -874,7 +894,8 @@ def get_indicator_results_sync(df, selected=None, history=False):
         "trend_following": {
             "supertrend": {k:v for k,v in st_res.items() if k != "series"} if st_res else {},
             "imba_trend": {k:v for k,v in imba_res.items() if k != "series"} if imba_res else {},
-            "trend_pro_z": calculate_trend_pro_z(df) if is_req("TREND_PRO_Z") or sel is None else {}
+            "trend_pro_z": calculate_trend_pro_z(df) if is_req("TREND_PRO_Z") or sel is None else {},
+            "ichimoku": calculate_ichimoku(df) if is_req("ICHIMOKU") or sel is None else {}
         },
         "forecasting_models": {
             "mtf_macd_forecast": calculate_mtf_macd_forecast(df) if is_req("MTF_MACD_FORECAST") or sel is None else {},

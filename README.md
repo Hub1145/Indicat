@@ -1,99 +1,80 @@
-# Pro-Trader Ultimate TA-as-a-Service API
+# Pro-Trader Strategy Intelligence & Institutional Risk Platform
 
-A high-performance, commercial-grade Technical Analysis API built with FastAPI and TA-Lib. Designed for trading bot developers, fintech startups, and institutional-grade algorithmic analysis. This platform offloads the "math heavy lifting" and complex strategy logic into a scalable microservice.
+A production-grade Technical Analysis Microservice built with FastAPI and TA-Lib. This platform is not just an indicator provider—it is a comprehensive **Strategy Intelligence Engine** designed to reduce bot development time by 50% while improving statistical performance.
 
-## 🚀 Enterprise-Grade Features
+## 🚀 Key Differentiators (Why This Wins)
 
-### 1. Advanced Indicator Math Engine
-- **250+ Indicators**: Full integration of **TA-Lib (C-Core)** for maximum speed, plus the `ta` library for high-level trend/momentum analysis.
-- **Dynamic Discovery**: The `GET /indicators` endpoint allows clients to explore all 150+ TA-Lib functions and custom strategy models programmatically.
+### 1. Market Regime Detection Engine
+Stop trading trend-following strategies in ranging markets.
+- **Dynamic Classification**: Automatically identifies if the market is **Trending Bullish/Bearish**, **Ranging (High/Low Volatility)**, or in a **Volatility Squeeze**.
+- **Metrics**: ADX Trend Strength, BBWidth Volatility Scores, and Relative ATR percentage.
 
-### 2. Smart Money Concepts (SMC) & ICT Toolkit
-Professional-grade port of high-end strategy concepts:
-- **Market Structure**: Automatic detection of Market Structure Shifts (MSS) and Break of Structure (BOS).
-- **Liquidity Imbalances**: Real-time identification of Fair Value Gaps (FVG) and Balanced Price Ranges (BPR).
-- **Institutional Zones**: Detection of Order Blocks and Breaker Blocks with mitigation tracking.
-- **Liquidity Pools**: Clustering of pivot points to identify major buy-side and sell-side liquidity.
-- **Volume Imbalance**: Detection of gaps between candle bodies.
-- **Opening Gaps**: New Week Opening Gaps (NWOG) and New Day Opening Gaps (NDOG).
+### 2. AI Strategy Discovery & Optimizer
+Don't guess which indicators to use.
+- **Automated Optimization**: Scans multiple strategy archetypes (EMA Cross, RSI Mean Reversion, BBands Mean Reversion) for the current market regime.
+- **Expectancy Ranking**: Returns the top 3 performing rule-sets based on historical expectancy and win rate.
+- **Contextual Recommendation**: Provides data-driven advice on whether to favor trend-following or mean-reversion tools.
 
-### 3. Predictive Forecasting & Modeling
-- **Adaptive Harmonic Forecast**: A LuxAlgo-inspired model that uses Periodogram-based cycle detection and Least Squares fitting to project future price paths.
-- **MTF MACD Forecast**: Statistical forecasting using a memory of relative price movements within higher timeframe trend segments.
+### 3. Smart Liquidity Map (Institutional Level)
+Trade like the "Big Money."
+- **Liquidity Density**: Uses Gaussian distribution to calculate price density around pivot clusters.
+- **Sweep Probability**: Assigns a probability score (0-100%) for potential stop-hunts and liquidity sweeps.
+- **SMC Detection**: Built-in Fair Value Gaps (FVG), Order Blocks (OB), Breakers, and Market Structure Shifts (MSS/BOS).
 
-### 4. Specialized Strategy Ports
-- **Trend-Pro + Z**: Advanced trend-following system using HMA phase compensation and ATR-based trailing scores.
-- **UT Bot Alerts**: High-sensitivity buy/sell signal engine using recursive ATR trailing stops.
-- **Squeeze Momentum [LazyBear]**: BB/KC squeeze detection with linear regression momentum visualization.
-- **Z-Score Predictive Zones**: LuxAlgo port for volatility-normalized overbought/oversold identification.
+### 4. Walk-Forward Backtesting & Monte Carlo Engine
+Validate your edge with institutional-grade statistics.
+- **Walk-Forward Validation**: Splits data into segments to test strategy consistency across different time periods.
+- **Monte Carlo Simulations**: Runs 1000 randomized trade sequence shuffles to determine the probability distribution of outcomes and risk of ruin.
+- **Stats**: Win Rate, Profit Factor, Sharpe Ratio, and Max Drawdown.
 
-### 5. Institutional Risk & Portfolio Tools
-- **Options Greeks**: Black-Scholes engine for calculating Delta and other greeks.
-- **Portfolio Metrics**: Asset correlation matrices, Value at Risk (VaR 95), and Portfolio Beta.
-- **Market Dynamics**: Multi-Timeframe (MTF) analysis, horizontal S/R level clustering, and VWAP Volume Profiles.
+### 5. Execution & Risk Layer API
+Plug-and-play risk management for bot developers.
+- **Position Sizing**: `/risk/position-size` calculates exact units and notional value based on account balance, risk percentage, and stop-loss distance.
+- **Portfolio Allocator**: `/risk/allocator` distributes capital across multiple assets using **Inverse Volatility Weighting** (lower volatility = higher allocation).
 
-### 6. High-Performance Infrastructure
-- **TradingView Integration**: `GET /analyze/chart` generates interactive Lightweight Charts with intelligent oscillator pane separation.
-- **Distributed Ready**: Docker-compose orchestration with **PostgreSQL 15** and **Redis 7**.
-- **Tiered Monetization**: Built-in support for Free, Pro, and Enterprise tiers with Redis-backed rate limiting.
-- **Parallel Execution**: CPU-bound calculations are parallelized using `ProcessPoolExecutor`.
-- **Fast Delivery**: Optimized with `orjson` and GZip compression for millisecond response times.
+## 📊 Comprehensive Indicator Suite
 
-## 🛠 Tech Stack
+- **250+ Indicators**: Full **TA-Lib (C-Core)** integration for 150+ standard functions, plus the `ta` library.
+- **Specialized Strategy Ports**:
+    - **Trend-Pro + Z**: Advanced HMA phase-compensated trend tracking.
+    - **UT Bot Alerts**: High-sensitivity ATR-trailing signals.
+    - **Squeeze Momentum [LazyBear]**: The definitive BB/KC squeeze indicator.
+    - **VWAP Volume Profile**: 50-bin price distribution analysis with Positive/Negative POC.
+    - **Adaptive Harmonic Forecast**: Periodogram-based cycle detection and Least Squares path projection.
 
-- **FastAPI**: Asynchronous Python web framework.
-- **TA-Lib**: Industry-standard C-based financial math library.
-- **yfinance & Binance**: Unified data fetching for Stocks, Forex, and Crypto.
-- **SQLAlchemy/PostgreSQL**: Request logging, user management, and alert persistence.
-- **Redis**: Rate limiting and real-time state management.
-- **SciPy/NumPy**: Advanced signal processing and matrix mathematics.
+## 🛠 Tech Stack & Infrastructure
+
+- **FastAPI**: Non-blocking asynchronous API framework.
+- **TA-Lib**: Industry-standard high-performance C math engine.
+- **PostgreSQL 15 & Redis 7**: Managed persistence for users, requests, and alerts with tiered rate limiting.
+- **ProcessPoolExecutor**: Parallelizes CPU-bound calculations for millisecond responses.
+- **orjson & GZip**: Ultra-fast serialization and payload compression.
+- **TradingView Integration**: `GET /analyze/chart` renders interactive charts with intelligent oscillator pane separation.
 
 ## 🚦 Quick Start
 
-### 1. Prerequisites
-- Docker and Docker Compose.
-- (Optional) TA-Lib C-library if running without Docker.
-
-### 2. Deployment
+### Deployment (Docker Compose)
 ```bash
-# Clone and start the infrastructure
 docker-compose up --build -d
 ```
-The API will be available at `http://localhost:8000`.
+Access the API at `http://localhost:8000` and Swagger docs at `/docs`.
 
-### 3. Environment Variables
-- `RAPIDAPI_PROXY_SECRET`: Secret for validating RapidAPI proxy headers.
-- `DATABASE_URL`: Connection string for PostgreSQL.
-- `REDIS_URL`: Connection string for Redis.
+### Environment Configuration
+- `RAPIDAPI_PROXY_SECRET`: For RapidAPI gateway integration.
+- `DATABASE_URL`: PostgreSQL connection string.
+- `REDIS_URL`: Redis connection string.
 
-## 📖 API Usage Guide
+## 💰 Monetization & Tiering
+Configured for RapidAPI hosting with tiered RPM limits:
+- **Free**: 10 RPM (Market testing)
+- **Pro**: 100 RPM (Professional botting)
+- **Enterprise**: 1000 RPM (Institutional grade)
 
-### Full Market Analysis
-`POST /analyze/market`
-```json
-{
-  "provider": "crypto",
-  "symbol": "BTC/USDT",
-  "timeframe": "1h",
-  "indicators": ["RSI", "MACD", "EMA200"],
-  "include_history": false
-}
-```
-
-### Interactive Charting
-Open in your browser:
-`http://localhost:8000/analyze/chart?symbol=ETH/USDT&timeframe=1d&indicators=RSI,EMA20,EMA50`
-
-### Confluence Scoring
-`POST /confluence-score`
-Returns a consolidated sentiment score from -100 to +100 based on multiple indicators and market structure.
-
-## 💰 Monetization Strategy
-
-The platform is designed to be hosted on **RapidAPI**. It includes middleware to verify the `X-RapidAPI-Proxy-Secret`.
-- **Free Tier**: 10 RPM (Requests Per Minute)
-- **Pro Tier**: 100 RPM
-- **Enterprise Tier**: 1000 RPM
+## 🖥 Resource Requirements
+Estimated for production deployment (100 concurrent users):
+- **RAM**: ~1 GB
+- **Storage**: ~2 GB
+- **CPU**: 2+ Cores (Recommended for parallel calculation)
 
 ---
-© 2024 Pro-Trader API | Built for the next generation of algorithmic traders.
+© 2024 Pro-Trader API | Powering the next generation of algorithmic intelligence.
