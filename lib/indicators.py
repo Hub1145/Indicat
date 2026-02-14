@@ -58,6 +58,11 @@ def _get_indicators_metadata():
         "forecasting_models": {
             "Harmonic_Forecast": "Adaptive Harmonic Forecast [LuxAlgo]",
             "MTF_MACD_Forecast": "MTF MACD Strategy with Forecasting"
+        },
+        "market_intelligence": {
+            "Market_Regime": "Market Regime Detection Engine",
+            "Liquidity_Heatmap": "Smart Liquidity & Sweep Probability",
+            "Strategy_Discovery": "AI Strategy Generator & Optimizer"
         }
     }
 
@@ -406,6 +411,67 @@ def calculate_adaptive_harmonic_forecast(df: pd.DataFrame, lookback=100, extrap=
         forecast.append({"step": i, "value": float(y), "trend": float(Beta[-2]*t + Beta[-1])})
     return {"best_periods": [float(p) for p in best_periods], "forecast": forecast, "slope": float(Beta[-2])}
 
+def calculate_liquidity_heatmap(df: pd.DataFrame):
+    """
+    Smart Liquidity Map
+    Calculates liquidity density and sweep probabilities.
+    """
+    if len(df) < 50: return None
+    h, l, c = df['high'].values, df['low'].values, df['close'].values
+
+    # Identify key zones (using argrelextrema for pivot clusters)
+    ph_idx = argrelextrema(h, np.greater, order=10)[0]
+    pl_idx = argrelextrema(l, np.less, order=10)[0]
+
+    recent_price = c[-1]
+    atr = talib.ATR(h, l, c, timeperiod=14)[-1]
+
+    def get_density_and_prob(levels, is_highs):
+        if len(levels) == 0: return []
+
+        # Grid price range
+        min_p, max_p = l.min(), h.max()
+        grid = np.linspace(min_p, max_p, 50)
+        density = np.zeros(len(grid))
+
+        for p in levels:
+            # Structures contribute to density around their price
+            dist = np.abs(grid - p)
+            # Gaussian contribution
+            density += np.exp(-(dist**2) / (2 * (atr * 0.5)**2))
+
+        # Find clusters
+        top_idx = np.argsort(density)[::-1][:5]
+        clusters = []
+        for idx in top_idx:
+            price_lv = grid[idx]
+            # Probability of sweep: higher if price is close but hasn't hit yet
+            dist_to_price = abs(price_lv - recent_price)
+            prob = 0
+            if dist_to_price < atr * 2:
+                prob = 100 * np.exp(-dist_to_price / (atr))
+
+            clusters.append({
+                "price": float(price_lv),
+                "density_score": float(density[idx]),
+                "sweep_probability": float(prob),
+                "type": "Buy-side" if is_highs else "Sell-side"
+            })
+        return clusters
+
+    buyside = get_density_and_prob(h[ph_idx], True)
+    sellside = get_density_and_prob(l[pl_idx], False)
+
+    # Combined heatmap score
+    all_clusters = buyside + sellside
+    max_prob = max([c['sweep_probability'] for c in all_clusters]) if all_clusters else 0
+
+    return {
+        "clusters": all_clusters,
+        "max_sweep_risk": float(max_prob),
+        "liquidity_state": "High" if max_prob > 70 else ("Medium" if max_prob > 30 else "Low")
+    }
+
 def calculate_vwap_volume_profile(df: pd.DataFrame, period=250, bins=50):
     if len(df) < 5: return None
     p = min(period, len(df))
@@ -478,6 +544,63 @@ def calculate_mtf_macd_forecast(df: pd.DataFrame, fast=12, slow=26, sig=9, htf="
         f.append({"step": x, "upper": up, "mid": mid, "lower": lo})
     return {"htf_trend": "Bullish" if htf_trend.iloc[-1] else "Bearish", "current_trend": "Bullish" if lt else "Bearish", "forecast": f}
 
+def detect_market_regime(df: pd.DataFrame):
+    """
+    Market Regime Detection Engine
+    Classifies market state based on Trend, Volatility, and Momentum.
+    """
+    if len(df) < 30: return None
+    c, h, l = df['close'].values, df['high'].values, df['low'].values
+
+    # 1. Trend Analysis (ADX + EMA)
+    adx = talib.ADX(h, l, c, timeperiod=14)
+    ema20, ema50 = talib.EMA(c, 20), talib.EMA(c, 50)
+
+    curr_adx = adx[-1]
+    is_trending = curr_adx > 25
+    is_strong_trend = curr_adx > 40
+
+    trend_dir = "Neutral"
+    if ema20[-1] > ema50[-1]: trend_dir = "Bullish"
+    elif ema20[-1] < ema50[-1]: trend_dir = "Bearish"
+
+    # 2. Volatility Analysis (ATR + BBWidth)
+    atr = talib.ATR(h, l, c, timeperiod=14)
+    rel_atr = (atr[-1] / c[-1]) * 100
+
+    upper, mid, lower = talib.BBANDS(c, timeperiod=20)
+    bb_width = (upper - lower) / mid
+    curr_bbw = bb_width[-1]
+
+    is_low_vol = curr_bbw < np.percentile(bb_width[~np.isnan(bb_width)], 25)
+    is_high_vol = curr_bbw > np.percentile(bb_width[~np.isnan(bb_width)], 75)
+
+    # 3. Momentum (RSI)
+    rsi = talib.RSI(c, timeperiod=14)
+    curr_rsi = rsi[-1]
+
+    # Classification Logic
+    regime = "Ranging"
+    if is_trending:
+        regime = f"Trending {trend_dir}"
+        if is_strong_trend: regime = f"Strong {regime}"
+    elif is_low_vol:
+        regime = "Volatility Squeeze"
+    elif is_high_vol:
+        regime = "High Volatility Range"
+
+    if curr_rsi > 70: regime += " (Overbought)"
+    elif curr_rsi < 30: regime += " (Oversold)"
+
+    return {
+        "regime": regime,
+        "trend_strength": float(curr_adx),
+        "volatility_score": float(curr_bbw),
+        "relative_atr_pct": float(rel_atr),
+        "is_trending": bool(is_trending),
+        "bias": trend_dir
+    }
+
 def calculate_vwma(series, volume, length):
     return (series * volume).rolling(length).sum() / volume.rolling(length).sum()
 
@@ -540,17 +663,143 @@ def calculate_portfolio_metrics(asset_series: Dict[str, pd.Series], market_retur
             metrics[asset]["beta"] = float(np.cov(m_df.iloc[:,0], m_df.iloc[:,1])[0,1]/np.var(m_df.iloc[:,1]) if np.var(m_df.iloc[:,1])!=0 else 0)
     return {"correlation_matrix": df.corr().to_dict(), "asset_metrics": metrics}
 
-def backtest_strategy(df: pd.DataFrame, initial_capital=10000):
-    c = df['close']
-    e9, e21 = talib.EMA(c, 9), talib.EMA(c, 21)
+def run_monte_carlo(returns, simulations=1000):
+    """Shuffles returns to estimate probability distribution of outcomes."""
+    if len(returns) == 0: return {}
+    results = []
+    for _ in range(simulations):
+        path = np.random.choice(returns, size=len(returns), replace=True)
+        results.append(np.sum(path))
+    return {
+        "mean_return": float(np.mean(results)),
+        "std_dev": float(np.std(results)),
+        "p5_value": float(np.percentile(results, 5)),
+        "p95_value": float(np.percentile(results, 95))
+    }
+
+def backtest_strategy(df: pd.DataFrame, initial_capital=10000, strategy_type="EMA"):
+    """
+    Advanced Backtesting Engine with Statistics.
+    """
+    c = df['close'].values
+    if strategy_type == "EMA":
+        fast, slow = talib.EMA(c, 9), talib.EMA(c, 21)
+        long_cond = (fast > slow) & (np.roll(fast, 1) <= np.roll(slow, 1))
+        short_cond = (fast < slow) & (np.roll(fast, 1) >= np.roll(slow, 1))
+    else:
+        # Default to RSI mean reversion if unknown
+        rsi = talib.RSI(c, 14)
+        long_cond = (rsi < 30) & (np.roll(rsi, 1) >= 30)
+        short_cond = (rsi > 70) & (np.roll(rsi, 1) <= 70)
+
     cap, pos, trades = initial_capital, 0, []
+    returns = []
+
     for i in range(1, len(df)):
-        if e9[i] > e21[i] and e9[i-1] <= e21[i-1] and pos == 0:
-            pos = cap / c[i]; buy_p = c[i]; cap = 0; trades.append({"type": "buy", "price": float(buy_p), "index": i})
-        elif e9[i] < e21[i] and e9[i-1] >= e21[i-1] and pos > 0:
-            cap = pos * c[i]; pos = 0; trades.append({"type": "sell", "price": float(c[i]), "index": i, "profit": float(c[i] - buy_p)})
-    fv = cap if pos == 0 else pos * c.iloc[-1]
-    return {"initial_capital": float(initial_capital), "final_value": float(fv), "total_return_pct": float(((fv - initial_capital) / initial_capital) * 100), "trades": trades}
+        if long_cond[i] and pos == 0:
+            pos = cap / c[i]
+            buy_p = c[i]
+            cap = 0
+            trades.append({"type": "buy", "price": float(buy_p), "index": i})
+        elif short_cond[i] and pos > 0:
+            profit = (pos * c[i]) - (pos * buy_p)
+            returns.append(profit / (pos * buy_p))
+            cap = pos * c[i]
+            pos = 0
+            trades.append({"type": "sell", "price": float(c[i]), "index": i, "profit": float(profit)})
+
+    final_val = cap if pos == 0 else pos * c[-1]
+    total_ret = ((final_val - initial_capital) / initial_capital)
+
+    # Calculate Stats
+    returns = np.array(returns)
+    win_rate = np.sum(returns > 0) / len(returns) if len(returns) > 0 else 0
+    profit_factor = np.sum(returns[returns > 0]) / abs(np.sum(returns[returns < 0])) if np.any(returns < 0) else float('inf')
+
+    # Sharpe Ratio (annualized approx)
+    sharpe = (np.mean(returns) / np.std(returns)) * np.sqrt(252) if len(returns) > 1 and np.std(returns) != 0 else 0
+
+    # Monte Carlo
+    mc = run_monte_carlo(returns) if len(returns) > 0 else {}
+
+    return {
+        "summary": {
+            "initial_capital": float(initial_capital),
+            "final_value": float(final_val),
+            "total_return_pct": float(total_ret * 100),
+            "win_rate": float(win_rate * 100),
+            "profit_factor": float(profit_factor),
+            "sharpe_ratio": float(sharpe),
+            "trade_count": len(trades) // 2
+        },
+        "monte_carlo": mc,
+        "trades": trades
+    }
+
+def discover_best_strategy(df: pd.DataFrame):
+    """
+    AI-lite Strategy Optimizer
+    Tests common indicator combinations and returns the best performing rule-set.
+    """
+    strategies = ["EMA", "RSI", "MACD", "BBANDS"]
+    regime = detect_market_regime(df)
+
+    results = []
+    for s in strategies:
+        res = backtest_strategy(df, strategy_type=s)
+        results.append({
+            "strategy": s,
+            "expectancy": res["summary"]["total_return_pct"] * res["summary"]["win_rate"],
+            "metrics": res["summary"]
+        })
+
+    # Rank by expectancy
+    ranked = sorted(results, key=lambda x: x["expectancy"], reverse=True)
+
+    # Custom recommendation based on regime
+    recommendation = "Maintain current strategy."
+    if regime["regime"].startswith("Trending"):
+        recommendation = "Trend-following strategies (EMA/MACD) are favored."
+    elif regime["regime"] == "Ranging":
+        recommendation = "Mean-reversion strategies (RSI/BBands) are favored."
+
+    return {
+        "top_strategies": ranked[:3],
+        "market_context": regime["regime"],
+        "recommendation": recommendation
+    }
+
+def walk_forward_backtest(df: pd.DataFrame, strategy_type="EMA", segments=4):
+    """
+    Splits data into IS/OOS segments and runs backtests.
+    """
+    if len(df) < 100: return None
+    segment_size = len(df) // segments
+    results = []
+
+    for i in range(segments):
+        start = i * segment_size
+        end = (i + 1) * segment_size if i < segments - 1 else len(df)
+        chunk = df.iloc[start:end]
+
+        # Run backtest on chunk
+        bt_res = backtest_strategy(chunk, strategy_type=strategy_type)
+        results.append({
+            "segment": i,
+            "period_start": str(chunk.index[0]),
+            "period_end": str(chunk.index[-1]),
+            "return_pct": bt_res["summary"]["total_return_pct"],
+            "win_rate": bt_res["summary"]["win_rate"]
+        })
+
+    avg_ret = np.mean([r["return_pct"] for r in results])
+    consistency = 100 - np.std([r["return_pct"] for r in results])
+
+    return {
+        "segments": results,
+        "average_segment_return": float(avg_ret),
+        "stability_score": float(consistency)
+    }
 
 executor = ProcessPoolExecutor(max_workers=4)
 
@@ -630,6 +879,11 @@ def get_indicator_results_sync(df, selected=None, history=False):
         "forecasting_models": {
             "mtf_macd_forecast": calculate_mtf_macd_forecast(df) if is_req("MTF_MACD_FORECAST") or sel is None else {},
             "harmonic_forecast": calculate_adaptive_harmonic_forecast(df) if is_req("HARMONIC_FORECAST") or sel is None else {}
+        },
+        "market_intelligence": {
+            "regime": detect_market_regime(df),
+            "liquidity_heatmap": calculate_liquidity_heatmap(df),
+            "strategy_discovery": discover_best_strategy(df)
         }
     }
 

@@ -93,6 +93,19 @@ class BacktestRequest(BaseModel):
     strategy: Dict[str, Any]
     period: str = "1y"
 
+class PositionSizeRequest(BaseModel):
+    account_balance: float
+    risk_percentage: float = 1.0 # 1% of account
+    entry_price: float
+    stop_loss: float
+    asset_type: Literal["crypto", "stock", "forex"] = "crypto"
+
+class PortfolioAllocatorRequest(BaseModel):
+    total_capital: float
+    assets: List[str]
+    risk_per_asset: float = 1.0
+    provider: Literal["crypto", "stock", "forex"] = "crypto"
+
 # --- App Setup ---
 
 app = FastAPI(title="Pro-Trader Ultimate TA-as-a-Service API")
@@ -267,6 +280,65 @@ async def backtest(req: BacktestRequest):
     from lib.indicators import backtest_strategy
     res = backtest_strategy(df)
     return {"symbol": req.symbol, "results": res}
+
+@app.post("/backtest/walk-forward", dependencies=[Depends(get_current_user)])
+async def walk_forward(req: BacktestRequest):
+    df = await fetch_data("crypto", req.symbol, "1d")
+    from lib.indicators import walk_forward_backtest
+    res = walk_forward_backtest(df)
+    return {"symbol": req.symbol, "results": res}
+
+@app.post("/risk/position-size", dependencies=[Depends(get_current_user)])
+async def position_size(req: PositionSizeRequest):
+    risk_amount = req.account_balance * (req.risk_percentage / 100)
+    price_diff = abs(req.entry_price - req.stop_loss)
+
+    if price_diff == 0:
+        raise HTTPException(status_code=400, detail="Entry and Stop Loss cannot be the same.")
+
+    position_units = risk_amount / price_diff
+    notional_value = position_units * req.entry_price
+
+    # Kelly Criterion Placeholder (Requires win rate history)
+    # k = w - (1-w)/r
+
+    return {
+        "risk_amount": float(risk_amount),
+        "position_units": float(position_units),
+        "notional_value": float(notional_value),
+        "r_multiple": float(price_diff / req.entry_price),
+        "leverage_required": float(notional_value / req.account_balance)
+    }
+
+@app.post("/risk/allocator", dependencies=[Depends(get_current_user)])
+async def portfolio_allocator(req: PortfolioAllocatorRequest):
+    """Allocates capital based on Volatility (Inverse ATR)."""
+    allocations = {}
+    total_weight = 0
+
+    for asset in req.assets:
+        try:
+            df = await fetch_data(req.provider, asset, "1d")
+            atr = talib.ATR(df['high'].values, df['low'].values, df['close'].values, timeperiod=14)[-1]
+            # Weight is inverse of ATR (lower volatility = higher weight)
+            weight = 1.0 / (atr / df['close'].iloc[-1])
+            allocations[asset] = {"weight": weight, "price": float(df['close'].iloc[-1])}
+            total_weight += weight
+        except: continue
+
+    if not total_weight: raise HTTPException(status_code=400, detail="Could not calculate volatility for assets.")
+
+    result = {}
+    for asset, data in allocations.items():
+        share = data["weight"] / total_weight
+        amt = req.total_capital * share
+        result[asset] = {
+            "allocation_pct": float(share * 100),
+            "amount": float(amt),
+            "suggested_units": float(amt / data["price"])
+        }
+
+    return result
 
 @app.post("/alerts/create")
 async def create_alert(req: AlertRequest, user: User = Depends(get_current_user), db=Depends(get_db)):
