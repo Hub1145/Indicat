@@ -50,6 +50,9 @@ def _get_indicators_metadata():
         "squeeze_momentum": {
             "Squeeze_LB": "Squeeze Momentum Indicator [LazyBear]"
         },
+        "cycle_indicators": {
+            "Normalized_Resonator": "Normalized Resonator [LuxAlgo]"
+        },
         "trend_following": {
             "Supertrend": "Supertrend Indicator",
             "IMBA_Trend": "[IMBA] ALGO Trend Line + Signals",
@@ -492,6 +495,47 @@ def calculate_liquidity_heatmap(df: pd.DataFrame):
         "liquidity_state": "High" if max_prob > 70 else ("Medium" if max_prob > 30 else "Low")
     }
 
+def calculate_normalized_resonator(df: pd.DataFrame, period=100, delta=0.5, lookback_mult=1.0, signal_len=9):
+    """
+    Normalized Resonator [LuxAlgo]
+    Ported from PineScript v6
+    """
+    if len(df) < period + 2: return None
+
+    src = (df['high'] + df['low']) / 2
+    src_vals = src.values
+
+    omega = 2 * np.pi / period
+    alpha = np.tan(np.pi * delta / period)
+    beta = np.cos(omega)
+    r = 1.0 / (1.0 + alpha)
+
+    c1 = 2 * r * beta
+    c2 = -(2 * r - 1)
+    gain = alpha * r
+
+    bp = np.zeros(len(df))
+    # Using a simple loop for the recursive part
+    for i in range(2, len(df)):
+        bp[i] = gain * (src_vals[i] - src_vals[i-2]) + c1 * bp[i-1] + c2 * bp[i-2]
+
+    peak_lookback = max(1, int(period * lookback_mult))
+    bp_abs = np.abs(bp)
+
+    # Efficient highest over rolling window
+    peak = pd.Series(bp_abs).rolling(window=peak_lookback).max().values
+
+    oscillator = np.where(peak != 0, bp / peak, 0)
+    signal_line = talib.EMA(oscillator, timeperiod=signal_len)
+
+    return {
+        "oscillator": float(oscillator[-1]),
+        "signal_line": float(signal_line[-1]) if not np.isnan(signal_line[-1]) else None,
+        "cross_up": bool(oscillator[-1] > signal_line[-1] and oscillator[-2] <= signal_line[-2] and oscillator[-1] < -0.8),
+        "cross_down": bool(oscillator[-1] < signal_line[-1] and oscillator[-2] >= signal_line[-2] and oscillator[-1] > 0.8),
+        "series": pd.Series(oscillator, index=df.index)
+    }
+
 def calculate_vwap_volume_profile(df: pd.DataFrame, period=250, bins=50):
     if len(df) < 5: return None
     p = min(period, len(df))
@@ -866,12 +910,14 @@ def get_indicator_results_sync(df, selected=None, history=False):
     st_res = detect_supertrend(df) if is_req("SUPERTREND") else None
     imba_res = detect_imba_trend(df) if is_req("IMBA_TREND") else None
     sqz_res = detect_squeeze_momentum(df) if is_req("SQUEEZE_MOMENTUM") else None
+    resonator_res = calculate_normalized_resonator(df) if is_req("NORMALIZED_RESONATOR") else None
     zscore_res = detect_lux_zscore(df) if is_req("LUX_ZSCORE") else None
     ut_res = detect_ut_bot_alerts(df) if is_req("UT_BOT_ALERTS") else None
 
     if st_res: all_raw_cols["SUPERTREND"] = st_res["series"]
     if imba_res: all_raw_cols["IMBA_TREND"] = imba_res["series"]
     if sqz_res: all_raw_cols["SQUEEZE_MOMENTUM"] = sqz_res["series"]
+    if resonator_res: all_raw_cols["NORMALIZED_RESONATOR"] = resonator_res["series"]
     if zscore_res: all_raw_cols["LUX_ZSCORE"] = zscore_res["series"]
     if ut_res: all_raw_cols["UT_BOT_TS"] = ut_res["series"]
 
@@ -891,6 +937,7 @@ def get_indicator_results_sync(df, selected=None, history=False):
         "price_action_patterns": detect_price_action_patterns(df),
         "custom_lux_algo": {"zscore_zones": {k:v for k,v in zscore_res.items() if k != "series"} if zscore_res else {}, "market_structure": detect_lux_msb_ob(df)},
         "squeeze_momentum": {k:v for k,v in sqz_res.items() if k != "series"} if sqz_res else {},
+        "cycle_indicators": {k:v for k,v in resonator_res.items() if k != "series"} if resonator_res else {},
         "trend_following": {
             "supertrend": {k:v for k,v in st_res.items() if k != "series"} if st_res else {},
             "imba_trend": {k:v for k,v in imba_res.items() if k != "series"} if imba_res else {},

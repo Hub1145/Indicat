@@ -2,7 +2,7 @@
 
 A production-grade Technical Analysis Microservice built with FastAPI and TA-Lib. This platform is not just an indicator provider—it is a comprehensive **Strategy Intelligence Engine** designed to reduce bot development time by 50% while improving statistical performance.
 
-## 🚀 Key Differentiators
+## 🚀 Key Differentiators (Why This Wins)
 
 ### 1. Market Regime Detection Engine
 Stop trading trend-following strategies in ranging markets.
